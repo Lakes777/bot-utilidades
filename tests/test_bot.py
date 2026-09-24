@@ -1,8 +1,9 @@
 import asyncio
+import logging
 from datetime import timedelta
 from types import SimpleNamespace
 
-from bot_utilidades.bot import criar_app, enviar_lembrete, lembrar
+from bot_utilidades.bot import configurar_logs, criar_app, enviar_lembrete, lembrar
 
 TOKEN_FALSO = "123456789:" + "A" * 35
 
@@ -15,6 +16,12 @@ def test_registra_todos_os_comandos():
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {"start", "ajuda", "bitcoin", "dolar", "clima", "lembrar"}
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO))
+
+
+def test_logs_nao_mostram_o_token():
+    # O httpx loga a URL de cada requisição, e a URL da API do Telegram contém o token.
+    configurar_logs()
+    assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
 
 
 class Falso:
