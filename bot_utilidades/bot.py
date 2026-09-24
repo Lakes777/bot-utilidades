@@ -1,18 +1,20 @@
 """Monta o bot: liga cada comando do Telegram à função que responde."""
 
 import logging
+from datetime import datetime
 
 import httpx
 from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from bot_utilidades import clima, cotacoes
+from bot_utilidades import clima, cotacoes, lembretes
 
 # Aparecem no menu "/" do Telegram e na mensagem de /ajuda.
 COMANDOS = [
     BotCommand("bitcoin", "preço do Bitcoin em reais"),
     BotCommand("dolar", "cotação do dólar"),
     BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
+    BotCommand("lembrar", "lembrete, ex.: /lembrar 10m tomar água"),
     BotCommand("ajuda", "lista de comandos"),
 ]
 
@@ -59,6 +61,29 @@ async def responder_clima(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(texto)
 
 
+async def lembrar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        tempo, texto = lembretes.interpretar(context.args)
+    except lembretes.LembreteError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+
+    # O JobQueue guarda o lembrete e chama enviar_lembrete() quando der o tempo.
+    context.job_queue.run_once(
+        enviar_lembrete, when=tempo, chat_id=update.effective_chat.id, data=texto
+    )
+    horario = datetime.now() + tempo
+    await update.message.reply_text(
+        f"✅ Combinado! Daqui a {lembretes.descrever(tempo)} "
+        f"(às {horario:%H:%M}) eu te lembro: {texto}"
+    )
+
+
+async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job = context.job
+    await context.bot.send_message(job.chat_id, f"⏰ Lembrete: {job.data}")
+
+
 async def preparar(app: Application) -> None:
     # Um único cliente HTTP reaproveita conexões entre os comandos.
     app.bot_data["http"] = httpx.AsyncClient()
@@ -82,6 +107,7 @@ def criar_app(token: str) -> Application:
     app.add_handler(CommandHandler("bitcoin", responder_cotacao(cotacoes.BITCOIN)))
     app.add_handler(CommandHandler("dolar", responder_cotacao(cotacoes.DOLAR)))
     app.add_handler(CommandHandler("clima", responder_clima))
+    app.add_handler(CommandHandler("lembrar", lembrar))
     return app
 
 
