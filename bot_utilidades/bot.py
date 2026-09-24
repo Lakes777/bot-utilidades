@@ -6,12 +6,13 @@ import httpx
 from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from bot_utilidades import cotacoes
+from bot_utilidades import clima, cotacoes
 
 # Aparecem no menu "/" do Telegram e na mensagem de /ajuda.
 COMANDOS = [
     BotCommand("bitcoin", "preço do Bitcoin em reais"),
     BotCommand("dolar", "cotação do dólar"),
+    BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
     BotCommand("ajuda", "lista de comandos"),
 ]
 
@@ -45,6 +46,19 @@ def responder_cotacao(moeda: cotacoes.Moeda):
     return handler
 
 
+async def responder_clima(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # context.args são as palavras depois do comando: ["São", "Paulo"]
+    nome = " ".join(context.args)
+    if not nome:
+        await update.message.reply_text("Diga a cidade, ex.: /clima Curitiba")
+        return
+    try:
+        texto = clima.formatar(await clima.buscar(nome, context.bot_data["http"]))
+    except clima.ClimaError as erro:
+        texto = f"⚠️ {erro}"
+    await update.message.reply_text(texto)
+
+
 async def preparar(app: Application) -> None:
     # Um único cliente HTTP reaproveita conexões entre os comandos.
     app.bot_data["http"] = httpx.AsyncClient()
@@ -67,6 +81,7 @@ def criar_app(token: str) -> Application:
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(CommandHandler("bitcoin", responder_cotacao(cotacoes.BITCOIN)))
     app.add_handler(CommandHandler("dolar", responder_cotacao(cotacoes.DOLAR)))
+    app.add_handler(CommandHandler("clima", responder_clima))
     return app
 
 

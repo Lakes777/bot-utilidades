@@ -9,5 +9,5 @@ def comandos_registrados(app) -> set[str]:
 
 def test_registra_todos_os_comandos():
     # Montar o app não conecta ao Telegram, então o token falso basta.
-    esperados = {"start", "ajuda", "bitcoin", "dolar"}
+    esperados = {"start", "ajuda", "bitcoin", "dolar", "clima"}
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO))
