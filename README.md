@@ -1,4 +1,4 @@
-# 🤖 Bot de Utilidades para Telegram
+# Bot de Utilidades para Telegram
 
 [![Testes](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml/badge.svg)](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml)
 
@@ -44,7 +44,7 @@ cp .env.exemplo .env
 nano .env    # TELEGRAM_TOKEN=123456789:AAH...
 ```
 
-> ⚠️ **O `.env` nunca vai para o Git** (está no `.gitignore`). Quem tem o token controla o bot; se ele vazar, gere outro no BotFather com `/revoke`.
+> **Atenção: o `.env` nunca vai para o Git** (está no `.gitignore`). Quem tem o token controla o bot; se ele vazar, gere outro no BotFather com `/revoke`.
 
 ## Como usar
 
