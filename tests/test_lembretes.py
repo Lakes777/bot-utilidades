@@ -1,8 +1,15 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from bot_utilidades.lembretes import LembreteError, descrever, interpretar, ler_tempo
+from bot_utilidades.lembretes import (
+    FUSO,
+    LembreteError,
+    descrever,
+    descrever_horario,
+    interpretar,
+    ler_tempo,
+)
 
 
 @pytest.mark.parametrize(
@@ -34,13 +41,19 @@ def test_tempo_minimo():
 
 
 def test_tempo_maximo():
-    assert ler_tempo("7d") == timedelta(days=7)
-    with pytest.raises(LembreteError, match="máximo"):
-        ler_tempo("7d1m")
+    assert ler_tempo("365d") == timedelta(days=365)
+    with pytest.raises(LembreteError, match="máximo é 365 dias"):
+        ler_tempo("365d1m")
 
 
 def test_interpreta_tempo_e_texto():
     assert interpretar(["10m", "tomar", "água"]) == (timedelta(minutes=10), "tomar água")
+
+
+def test_texto_longo_demais():
+    assert interpretar(["10m", "a" * 500])[1] == "a" * 500
+    with pytest.raises(LembreteError, match="até 500 caracteres"):
+        interpretar(["10m", "a" * 501])
 
 
 @pytest.mark.parametrize("palavras", [[], ["10m"]])
@@ -60,3 +73,20 @@ def test_sem_texto_mostra_como_usar(palavras):
 )
 def test_descreve_tempo(tempo, esperado):
     assert descrever(tempo) == esperado
+
+
+AGORA = datetime(2026, 9, 27, 10, 0, tzinfo=FUSO)
+
+
+@pytest.mark.parametrize(
+    ("momento", "esperado"),
+    [
+        (datetime(2026, 9, 27, 14, 30, tzinfo=FUSO), "às 14:30"),
+        (datetime(2026, 9, 28, 8, 5, tzinfo=FUSO), "em 28/09 às 08:05"),
+        (datetime(2027, 1, 2, 9, 0, tzinfo=FUSO), "em 02/01/2027 às 09:00"),
+        # 02:30 em UTC do dia 28 ainda é 23:30 do dia 27 em Brasília.
+        (datetime(2026, 9, 28, 2, 30, tzinfo=timezone.utc), "às 23:30"),
+    ],
+)
+def test_descreve_horario(momento, esperado):
+    assert descrever_horario(momento, AGORA) == esperado

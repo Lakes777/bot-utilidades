@@ -2,6 +2,7 @@
 
 import sys
 
+from bot_utilidades.armazenamento import Banco
 from bot_utilidades.bot import configurar_logs, criar_app
 from bot_utilidades.config import ConfigError, carregar_token
 
@@ -14,7 +15,7 @@ def main() -> None:
 
     configurar_logs()
     print("Bot rodando! Mande /start pra ele no Telegram. Ctrl+C para parar.")
-    criar_app(token).run_polling()
+    criar_app(token, Banco()).run_polling()
 
 
 if __name__ == "__main__":

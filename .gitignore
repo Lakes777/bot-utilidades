@@ -1,6 +1,9 @@
 # Segredos: o token do bot NUNCA vai pro Git
 .env
 
+# Lembretes salvos (dados pessoais de quem usa o bot)
+dados/
+
 # Ambiente virtual
 .venv/
 
