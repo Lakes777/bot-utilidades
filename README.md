@@ -2,7 +2,7 @@
 
 [![Testes](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml/badge.svg)](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml)
 
-Bot de Telegram que responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade** e agenda **lembretes**. Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
+Bot de Telegram que responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade** e agenda **lembretes** que ficam salvos (inclusive diários). Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
 
 <p align="center">
   <img src="docs/demo.gif" alt="Demonstração do bot no Telegram" width="320">
@@ -15,11 +15,18 @@ Bot de Telegram que responde com a **cotação do Bitcoin e do dólar**, o **cli
 | `/bitcoin` | Preço do Bitcoin em reais, com variação, máxima e mínima do dia |
 | `/dolar` | Cotação do dólar em reais, com as mesmas informações |
 | `/clima Curitiba` | Temperatura, sensação térmica, umidade, vento, máxima/mínima e chance de chuva |
-| `/lembrar 1h30m reunião` | Manda uma mensagem de lembrete depois do tempo pedido (`10m`, `2h`, `1h30m`, `1d`) |
+| `/lembrar 1h30m reunião` | Lembrete depois do tempo pedido (`10m`, `2h`, `1h30m`, `1d`, até 365 dias) |
+| `/lembrar 18:30 ligar pra mãe` | Lembrete num horário fixo: hoje, ou amanhã se o horário já passou |
+| `/lembrar todo dia 8:00 remédio` | Lembrete repetido todo dia no mesmo horário |
+| `/lembretes` | Lista os lembretes pendentes, com número |
+| `/cancelar 3` | Cancela o lembrete de número 3 (só os do próprio chat) |
+| `/meuid` | Mostra o seu ID no Telegram (usado para fechar o bot, veja abaixo) |
 | `/ajuda` | Lista os comandos |
 
 - **Menu de comandos:** os comandos aparecem como sugestão ao digitar `/` no Telegram
 - **Erros explicados:** cidade inexistente, tempo em formato inválido, API fora do ar ou sem internet geram uma mensagem clara em vez de travar o bot
+- **Lembretes que não se perdem:** ficam salvos num banco SQLite (`dados/lembretes.db`). Se o bot for desligado, ao voltar ele reagenda tudo e manda na hora os que venceram enquanto estava fora, avisando o horário original
+- **Horário de Brasília:** horários digitados e mostrados usam sempre o fuso `America/Sao_Paulo`, não importa o relógio do computador
 - **Formato brasileiro:** valores como `R$ 433.082,00` e datas como `24/09/2026 às 20:46`
 
 ## Instalação
@@ -44,6 +51,16 @@ cp .env.exemplo .env
 nano .env    # TELEGRAM_TOKEN=123456789:AAH...
 ```
 
+### Deixando o bot só para você (opcional)
+
+Qualquer pessoa que achar o bot no Telegram pode usá-lo. Para fechá-lo, mande `/meuid` para ele e coloque o número no `.env` (vários IDs separados por vírgula):
+
+```bash
+USUARIOS_PERMITIDOS=123456789,987654321
+```
+
+Quem não estiver na lista recebe "Este bot é particular" junto com o próprio ID, para poder pedir que você o libere. Com a variável vazia, o bot fica aberto para todos.
+
 > **Atenção: o `.env` nunca vai para o Git** (está no `.gitignore`). Quem tem o token controla o bot; se ele vazar, gere outro no BotFather com `/revoke`.
 
 ## Como usar
@@ -61,19 +78,21 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 61 testes cobrindo a leitura do token, as cotações, o clima, a interpretação dos lembretes e os comandos do bot. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 156 testes cobrindo a leitura do `.env`, as cotações, o clima, a interpretação dos lembretes (tempos, horários, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
 ```
 bot-utilidades/
 ├── bot_utilidades/
-│   ├── __main__.py    # ponto de entrada: carrega o token e liga o bot
-│   ├── config.py      # lê e valida o token do .env
-│   ├── bot.py         # comandos do Telegram e agendamento dos lembretes
-│   ├── cotacoes.py    # Bitcoin e dólar (AwesomeAPI)
-│   ├── clima.py       # clima (Open-Meteo)
-│   └── lembretes.py   # interpreta "1h30m tomar água"
+│   ├── __main__.py      # ponto de entrada: carrega o .env e liga o bot
+│   ├── config.py        # lê e valida o token e os usuários permitidos
+│   ├── bot.py           # comandos do Telegram, porteiro e agendamento dos lembretes
+│   ├── cotacoes.py      # Bitcoin e dólar (AwesomeAPI)
+│   ├── clima.py         # clima (Open-Meteo)
+│   ├── lembretes.py     # interpreta "1h30m", "18:30" e "todo dia 8:00"
+│   └── armazenamento.py # guarda os lembretes em SQLite
+├── dados/             # banco dos lembretes (criado ao rodar, fora do Git)
 ├── tests/             # testes com pytest
 └── .env.exemplo       # modelo do .env, sem o token de verdade
 ```
@@ -86,13 +105,19 @@ bot-utilidades/
 - **`Decimal` para dinheiro:** como no [controle de gastos](https://github.com/Lakes777/controle-gastos), os preços nunca passam por `float`, evitando erros de centavos.
 - **APIs sem cadastro:** a [AwesomeAPI](https://docs.awesomeapi.com.br/api-de-moedas) (cotações) e o [Open-Meteo](https://open-meteo.com/) (clima) não pedem chave, então o token do bot é o único segredo do projeto. O clima faz duas consultas: primeiro converte o nome da cidade em coordenadas, depois busca a previsão.
 - **Um handler para várias moedas:** `/bitcoin` e `/dolar` são criados pela mesma função a partir de uma descrição da moeda. Adicionar outra (Ethereum, euro) é uma linha.
-- **Lembretes com limite de 7 dias:** eles ficam na memória do programa (`JobQueue`) e se perdem se o bot for desligado, então prazos longos não fariam sentido nesta versão.
-- **Testes que falham quando devem:** para conferir que os testes protegem de verdade, introduzi bugs de propósito (liberar o log com o token, voltar ao arredondamento do banqueiro, mandar o lembrete para o chat errado, ignorar o limite de 7 dias, entre outros) e verifiquei que a suíte detectou cada um.
+- **Banco como fonte da verdade, `JobQueue` só como despertador:** cada lembrete é salvo no SQLite e o agendador guarda só o número dele. Na hora de enviar, o texto é lido do banco; um lembrete cancelado no meio do caminho simplesmente não é achado. O lembrete só é apagado **depois** que o Telegram confirma o envio: se a internet cair, ele continua salvo e sai quando o bot voltar. Datas ficam em UTC, sempre no mesmo formato de texto, para a ordem alfabética ser a cronológica.
+- **Lembrete atrasado não se perde:** por padrão, o agendador (APScheduler) descarta em silêncio um job que dispara com mais de 1 segundo de atraso, o que aconteceria com o PC hibernando ou com lembretes vencidos com o bot desligado. Confirmei isso com o agendador de verdade (um job 3 horas atrasado foi descartado) e desliguei o limite (`misfire_grace_time=None`).
+- **Diário conta a partir de agora:** depois de cada envio, o próximo é marcado para a próxima vez que o relógio chegar ao horário. Se o bot ficou 3 dias desligado, sai uma mensagem só, e não três.
+- **"18:30" é horário, "18h" é duração:** só o formato com dois-pontos vira horário fixo, porque `/lembrar 18h ...` já queria dizer "daqui a 18 horas".
+- **Cancelar só o que é seu:** o `/cancelar` filtra pelo chat no próprio SQL, então chutar números não apaga lembretes de outra pessoa. Os números usam `AUTOINCREMENT` para nunca serem reaproveitados.
+- **Porteiro antes dos comandos:** a lista de permitidos é um handler que roda num grupo anterior ao de todos os comandos e interrompe o processamento (`ApplicationHandlerStop`) de quem não está nela. Assim nenhum comando novo fica aberto por esquecimento. O `/meuid` roda num grupo ainda anterior, para funcionar para qualquer pessoa.
+- **Testes que falham quando devem:** para conferir que os testes protegem de verdade, introduzi bugs de propósito (liberar o log com o token, voltar ao arredondamento do banqueiro, mandar o lembrete para o chat errado, cancelar lembrete de outro chat, reagendar o diário a partir do horário antigo, deixar o porteiro passar, entre outros) e verifiquei que a suíte detectou cada um.
 
 ## Próximos passos
 
-- [ ] Guardar os lembretes em SQLite, para sobreviverem a uma reinicialização
-- [ ] Listar e cancelar lembretes (`/lembretes`, `/cancelar`)
-- [ ] Lembretes em horário fixo (`/lembrar 18:30 ...`) e repetidos todo dia
+- [x] Guardar os lembretes em SQLite, para sobreviverem a uma reinicialização
+- [x] Listar e cancelar lembretes (`/lembretes`, `/cancelar`)
+- [x] Lembretes em horário fixo (`/lembrar 18:30 ...`) e repetidos todo dia
+- [x] Lista de usuários permitidos no `.env`
 - [ ] Alerta de preço: avisar quando o Bitcoin passar de um valor
 - [ ] Hospedar o bot num servidor para ficar online 24 horas
