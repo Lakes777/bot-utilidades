@@ -6,7 +6,14 @@ from datetime import datetime, timedelta
 import httpx
 from telegram import BotCommand, Update
 from telegram.error import Forbidden
-from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    CommandHandler,
+    ContextTypes,
+    JobQueue,
+    TypeHandler,
+)
 
 from bot_utilidades import clima, cotacoes, lembretes
 from bot_utilidades.armazenamento import Banco, Lembrete
@@ -24,12 +31,44 @@ COMANDOS = [
     BotCommand("lembrar", "lembrete, ex.: /lembrar 10m ou 18:30 ou todo dia 8:00"),
     BotCommand("lembretes", "lista seus lembretes pendentes"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
+    BotCommand("meuid", "mostra seu ID no Telegram"),
     BotCommand("ajuda", "lista de comandos"),
 ]
 
 AJUDA = "Comandos disponíveis:\n" + "\n".join(
     f"/{c.command} - {c.description}" for c in COMANDOS
 )
+
+
+async def meuid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    usuario_id = update.effective_user.id
+    texto = f"Seu ID no Telegram é {usuario_id}."
+    if context.bot_data["permitidos"] is None:
+        texto += (
+            "\n\nPara deixar o bot só para você, coloque no .env:\n"
+            f"USUARIOS_PERMITIDOS={usuario_id}"
+        )
+    await update.message.reply_text(texto)
+    # Responde a qualquer pessoa e para por aqui, sem passar pelo porteiro.
+    raise ApplicationHandlerStop
+
+
+async def porteiro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Roda antes de todos os comandos e barra quem não está em USUARIOS_PERMITIDOS."""
+    permitidos = context.bot_data["permitidos"]
+    usuario = update.effective_user
+    if permitidos is None or (usuario and usuario.id in permitidos):
+        return  # segue para o comando normalmente
+
+    log.info("Usuário %s barrado", usuario.id if usuario else "desconhecido")
+    if update.effective_message and usuario:
+        await update.effective_message.reply_text(
+            "🔒 Este bot é particular.\n"
+            f"Seu ID é {usuario.id}. Se você conhece o dono, mande esse número "
+            "para ele te liberar."
+        )
+    # Interrompe o processamento: os comandos (grupo 0) nem chegam a rodar.
+    raise ApplicationHandlerStop
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -209,7 +248,9 @@ async def fechar_http(app: Application) -> None:
     await app.bot_data["http"].aclose()
 
 
-def criar_app(token: str, banco: Banco) -> Application:
+def criar_app(
+    token: str, banco: Banco, permitidos: frozenset[int] | None = None
+) -> Application:
     app = (
         Application.builder()
         .token(token)
@@ -218,6 +259,11 @@ def criar_app(token: str, banco: Banco) -> Application:
         .build()
     )
     app.bot_data["banco"] = banco
+    app.bot_data["permitidos"] = permitidos
+    # Os grupos rodam em ordem (-2, -1, 0...). /meuid vem antes do porteiro para
+    # funcionar para qualquer pessoa; o porteiro vem antes de todos os comandos.
+    app.add_handler(CommandHandler("meuid", meuid), group=-2)
+    app.add_handler(TypeHandler(Update, porteiro), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(CommandHandler("bitcoin", responder_cotacao(cotacoes.BITCOIN)))

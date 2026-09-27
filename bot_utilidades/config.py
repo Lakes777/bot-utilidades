@@ -1,4 +1,4 @@
-"""Leitura das configurações (o token do bot) a partir do .env."""
+"""Leitura das configurações (token e usuários permitidos) a partir do .env."""
 
 import os
 import re
@@ -34,3 +34,25 @@ def carregar_token(arquivo_env: Path | None = None) -> str:
             "123456789:AAH... (confira se não sobrou o texto do exemplo)."
         )
     return token
+
+
+def carregar_permitidos(arquivo_env: Path | None = None) -> frozenset[int] | None:
+    """Lê USUARIOS_PERMITIDOS (IDs do Telegram separados por vírgula).
+
+    Devolve None quando a variável está vazia: aí o bot fica aberto para todos.
+    """
+    load_dotenv(arquivo_env)
+    texto = os.getenv("USUARIOS_PERMITIDOS", "").strip()
+    if not texto:
+        return None
+
+    ids = set()
+    for parte in re.split(r"[,\s]+", texto):
+        if not parte.isdecimal():
+            raise ConfigError(
+                f'USUARIOS_PERMITIDOS tem um valor inválido: "{parte}". Use os IDs '
+                "separados por vírgula, ex.: 123456789,987654321 (cada pessoa "
+                "descobre o seu mandando /meuid para o bot)."
+            )
+        ids.add(int(parte))
+    return frozenset(ids)

@@ -1,6 +1,6 @@
 import pytest
 
-from bot_utilidades.config import ConfigError, carregar_token
+from bot_utilidades.config import ConfigError, carregar_permitidos, carregar_token
 
 TOKEN_FALSO = "123456789:" + "A" * 35
 
@@ -35,3 +35,30 @@ def test_recusa_o_texto_do_exemplo(tmp_path):
     env.write_text("TELEGRAM_TOKEN=cole-seu-token-aqui\n")
     with pytest.raises(ConfigError, match="formato inválido"):
         carregar_token(env)
+
+
+@pytest.fixture(autouse=True)
+def sem_permitidos_no_ambiente(monkeypatch):
+    monkeypatch.delenv("USUARIOS_PERMITIDOS", raising=False)
+
+
+def test_sem_lista_de_permitidos_fica_aberto(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("USUARIOS_PERMITIDOS=\n")
+    assert carregar_permitidos(env) is None
+    assert carregar_permitidos(tmp_path / "nao-existe.env") is None
+
+
+@pytest.mark.parametrize("valor", ["111,222", "111, 222", " 111 222 ", "111,222,111"])
+def test_le_lista_de_permitidos(tmp_path, valor):
+    env = tmp_path / ".env"
+    env.write_text(f"USUARIOS_PERMITIDOS={valor}\n")
+    assert carregar_permitidos(env) == {111, 222}
+
+
+@pytest.mark.parametrize("valor", ["111,abc", "@lakes777", "111;222", "-5"])
+def test_recusa_ids_invalidos(tmp_path, valor):
+    env = tmp_path / ".env"
+    env.write_text(f"USUARIOS_PERMITIDOS={valor}\n")
+    with pytest.raises(ConfigError, match="valor inválido"):
+        carregar_permitidos(env)

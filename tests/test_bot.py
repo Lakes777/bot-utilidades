@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from telegram import Bot, Message, Update, User
 from telegram.error import Forbidden
 
 from bot_utilidades import bot
@@ -330,3 +331,92 @@ def test_lista_mostra_os_diarios(banco):
     banco.adicionar(42, "remédio", datetime(2026, 9, 28, 8, 0, tzinfo=FUSO), diario=True)
     [resposta] = simular_comando(listar_lembretes, [], banco)
     assert "#1 todo dia às 08:00: remédio" in resposta
+
+
+def mensagem_de(usuario_id, texto, update_id=1):
+    """Monta um Update igual ao que o Telegram manda quando alguém digita um comando."""
+    return {
+        "update_id": update_id,
+        "message": {
+            "message_id": update_id,
+            "date": 0,
+            "chat": {"id": usuario_id, "type": "private"},
+            "from": {"id": usuario_id, "is_bot": False, "first_name": "Teste"},
+            "text": texto,
+            "entities": [{"type": "bot_command", "offset": 0, "length": len(texto.split()[0])}],
+        },
+    }
+
+
+@pytest.fixture
+def respostas_do_bot(monkeypatch):
+    """Troca o envio de respostas por uma lista, para rodar o app sem internet."""
+    respostas = []
+
+    async def reply_text(self, texto, *args, **kwargs):
+        respostas.append((self.chat.id, texto))
+
+    async def get_me(self, *args, **kwargs):
+        # app.initialize() pergunta ao Telegram quem é o bot; aqui a resposta é inventada
+        # e guardada no mesmo lugar em que o get_me de verdade guarda.
+        self._bot_user = User(1, "Bot de teste", is_bot=True, username="bot_teste")
+        return self._bot_user
+
+    monkeypatch.setattr(Message, "reply_text", reply_text)
+    monkeypatch.setattr(Bot, "get_me", get_me)
+    return respostas
+
+
+def processar(app, *updates):
+    async def rodar():
+        await app.initialize()
+        for dados in updates:
+            await app.process_update(Update.de_json(dados, app.bot))
+        await app.shutdown()
+
+    asyncio.run(rodar())
+
+
+def test_sem_lista_qualquer_um_usa(banco, respostas_do_bot):
+    app = criar_app(TOKEN_FALSO, banco, permitidos=None)
+    processar(app, mensagem_de(555, "/ajuda"))
+    [(chat, texto)] = respostas_do_bot
+    assert chat == 555 and texto.startswith("Comandos disponíveis")
+
+
+def test_permitido_usa_normalmente(banco, respostas_do_bot):
+    app = criar_app(TOKEN_FALSO, banco, permitidos=frozenset({111}))
+    processar(app, mensagem_de(111, "/ajuda"))
+    [(_, texto)] = respostas_do_bot
+    assert texto.startswith("Comandos disponíveis")
+
+
+def test_desconhecido_e_barrado(banco, respostas_do_bot):
+    app = criar_app(TOKEN_FALSO, banco, permitidos=frozenset({111}))
+    processar(app, mensagem_de(555, "/lembrar 10m invadir"))
+
+    # Uma resposta só (a do porteiro): o /lembrar nem chegou a rodar.
+    assert respostas_do_bot == [
+        (
+            555,
+            "🔒 Este bot é particular.\nSeu ID é 555. Se você conhece o dono, "
+            "mande esse número para ele te liberar.",
+        )
+    ]
+    assert banco.todos() == []
+
+
+def test_meuid_funciona_para_qualquer_um(banco, respostas_do_bot):
+    app = criar_app(TOKEN_FALSO, banco, permitidos=frozenset({111}))
+    processar(app, mensagem_de(555, "/meuid"), mensagem_de(111, "/meuid", update_id=2))
+    assert respostas_do_bot == [
+        (555, "Seu ID no Telegram é 555."),
+        (111, "Seu ID no Telegram é 111."),
+    ]
+
+
+def test_meuid_ensina_a_fechar_o_bot(banco, respostas_do_bot):
+    app = criar_app(TOKEN_FALSO, banco, permitidos=None)
+    processar(app, mensagem_de(555, "/meuid"))
+    [(_, texto)] = respostas_do_bot
+    assert texto.endswith("coloque no .env:\nUSUARIOS_PERMITIDOS=555")
