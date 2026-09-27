@@ -21,7 +21,7 @@ COMANDOS = [
     BotCommand("bitcoin", "preço do Bitcoin em reais"),
     BotCommand("dolar", "cotação do dólar"),
     BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
-    BotCommand("lembrar", "lembrete, ex.: /lembrar 10m tomar água"),
+    BotCommand("lembrar", "lembrete, ex.: /lembrar 10m ou 18:30 ou todo dia 8:00"),
     BotCommand("lembretes", "lista seus lembretes pendentes"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
     BotCommand("ajuda", "lista de comandos"),
@@ -93,8 +93,9 @@ def agendar(job_queue: JobQueue, lembrete: Lembrete) -> None:
 async def lembrar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     banco: Banco = context.bot_data["banco"]
     chat_id = update.effective_chat.id
+    hora = agora()
     try:
-        tempo, texto = lembretes.interpretar(context.args)
+        pedido = lembretes.interpretar(context.args, hora)
     except lembretes.LembreteError as erro:
         await update.message.reply_text(f"⚠️ {erro}")
         return
@@ -106,13 +107,9 @@ async def lembrar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    hora = agora()
-    lembrete = banco.adicionar(chat_id, texto, hora + tempo)
+    lembrete = banco.adicionar(chat_id, pedido.texto, pedido.quando, pedido.diario)
     agendar(context.job_queue, lembrete)
-    await update.message.reply_text(
-        f"✅ Combinado! Daqui a {lembretes.descrever(tempo)} "
-        f"({lembretes.descrever_horario(lembrete.quando, hora)}) eu te lembro: {texto}"
-    )
+    await update.message.reply_text(lembretes.confirmar(pedido, hora))
 
 
 async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -123,19 +120,37 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     hora = agora()
     if hora - lembrete.quando > TOLERANCIA_ATRASO:
-        horario = lembretes.descrever_horario(lembrete.quando, hora)
+        horario = lembretes.data_e_hora(lembrete.quando, hora)
         mensagem = f"⏰ Lembrete atrasado (era para {horario}): {lembrete.texto}"
     else:
         mensagem = f"⏰ Lembrete: {lembrete.texto}"
+
+    if lembrete.diario:
+        mensagem += f"\n(todo dia; para parar: /cancelar {lembrete.id})"
 
     try:
         await context.bot.send_message(lembrete.chat_id, mensagem)
     except Forbidden:
         # A pessoa bloqueou o bot: não adianta tentar de novo a cada reinício.
         log.warning("Chat %s bloqueou o bot; lembrete %s apagado", lembrete.chat_id, lembrete.id)
-    # Só apaga depois de enviar: se a internet cair no envio, o erro sobe,
-    # o lembrete continua no banco e sai quando o bot for reiniciado.
-    banco.remover(lembrete.id)
+        banco.remover(lembrete.id)
+        return
+
+    # Só mexe no banco depois de enviar: se a internet cair no envio, o erro sobe,
+    # o lembrete continua como estava e sai quando o bot for reiniciado.
+    if lembrete.diario:
+        # Conta a partir de agora, não do horário antigo: se o bot ficou dias
+        # desligado, o lembrete sai uma vez só em vez de um por dia perdido.
+        horario = lembrete.quando.astimezone(lembretes.FUSO).time()
+        agendar(context.job_queue, banco.adiar(lembrete.id, lembretes.proxima_vez(horario, hora)))
+    else:
+        banco.remover(lembrete.id)
+
+
+def descrever_quando(lembrete: Lembrete, hora: datetime) -> str:
+    if lembrete.diario:
+        return f"todo dia às {lembrete.quando.astimezone(lembretes.FUSO):%H:%M}"
+    return lembretes.descrever_horario(lembrete.quando, hora)
 
 
 async def listar_lembretes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -147,8 +162,7 @@ async def listar_lembretes(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     hora = agora()
     linhas = [
-        f"#{l.id} {lembretes.descrever_horario(l.quando, hora)}: {lembretes.encurtar(l.texto)}"
-        for l in pendentes
+        f"#{l.id} {descrever_quando(l, hora)}: {lembretes.encurtar(l.texto)}" for l in pendentes
     ]
     await update.message.reply_text(
         "Seus lembretes:\n" + "\n".join(linhas) + "\n\nPara cancelar: /cancelar número"

@@ -38,6 +38,19 @@ def comandos_registrados(app) -> set[str]:
     return {comando for handler in app.handlers[0] for comando in handler.commands}
 
 
+def test_lembrar_horario_fixo_e_diario(banco):
+    _, respostas = simular_lembrar(["18:30", "ligar", "pra", "mãe"], banco)
+    _, respostas_diario = simular_lembrar(["todo", "dia", "8:00", "remédio"], banco)
+
+    fixo, diario = banco.todos()
+    assert fixo.quando == datetime(2026, 9, 27, 18, 30, tzinfo=FUSO)
+    assert not fixo.diario
+    assert diario.quando == datetime(2026, 9, 28, 8, 0, tzinfo=FUSO)
+    assert diario.diario
+    assert respostas == ["✅ Combinado! Hoje às 18:30 eu te lembro: ligar pra mãe"]
+    assert respostas_diario[0].startswith("✅ Combinado! Todo dia às 08:00")
+
+
 def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
@@ -125,9 +138,10 @@ def test_limite_de_lembretes_por_chat(banco):
     assert len(agendados) == 1
 
 
-def simular_envio(banco, lembrete_id, erro=None):
+def simular_envio(banco, lembrete_id, erro=None, agendados=None):
     falso = Falso()
     enviar = falso.gravar("send_message")
+    agendados = [] if agendados is None else agendados
 
     async def send_message(*args, **kwargs):
         await enviar(*args, **kwargs)
@@ -138,6 +152,7 @@ def simular_envio(banco, lembrete_id, erro=None):
         job=SimpleNamespace(data=lembrete_id),
         bot=SimpleNamespace(send_message=send_message),
         bot_data={"banco": banco},
+        job_queue=SimpleNamespace(run_once=lambda *a, **kw: agendados.append(kw)),
     )
     asyncio.run(enviar_lembrete(context))
     return falso.chamadas
@@ -153,7 +168,7 @@ def test_enviar_lembrete_manda_para_o_chat_certo_e_apaga(banco):
 def test_lembrete_atrasado_avisa_o_horario_original(banco):
     lembrete = banco.adicionar(42, "tomar água", AGORA - timedelta(hours=2))
     [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id)
-    assert mensagem == "⏰ Lembrete atrasado (era para às 08:00): tomar água"
+    assert mensagem == "⏰ Lembrete atrasado (era para hoje às 08:00): tomar água"
 
 
 def test_lembrete_cancelado_nao_e_enviado(banco):
@@ -269,3 +284,49 @@ def test_nao_cancela_lembrete_de_outro_chat(banco):
 def test_cancelar_sem_numero_mostra_como_usar(banco):
     [resposta] = simular_comando(cancelar, [], banco)
     assert resposta.startswith("⚠️ Use assim: /cancelar 3")
+
+
+def test_lembrete_diario_e_reagendado_para_amanha(banco):
+    lembrete = banco.adicionar(42, "remédio", AGORA, diario=True)
+    agendados = []
+
+    [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id, agendados=agendados)
+
+    assert mensagem == "⏰ Lembrete: remédio\n(todo dia; para parar: /cancelar 1)"
+    [amanha] = banco.todos()
+    assert amanha.quando == AGORA + timedelta(days=1)
+    [kwargs] = agendados
+    assert kwargs["when"] == amanha.quando
+    assert kwargs["data"] == lembrete.id
+
+
+def test_diario_atrasado_sai_uma_vez_so(banco):
+    # O bot ficou 3 dias desligado: manda uma mensagem só e marca para a próxima vez.
+    tres_dias_atras = datetime(2026, 9, 24, 8, 0, tzinfo=FUSO)
+    lembrete = banco.adicionar(42, "remédio", tres_dias_atras, diario=True)
+
+    [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id)
+
+    assert mensagem.startswith("⏰ Lembrete atrasado (era para 24/09 às 08:00): remédio")
+    assert banco.buscar(lembrete.id).quando == datetime(2026, 9, 28, 8, 0, tzinfo=FUSO)
+
+
+def test_diario_nao_avanca_se_o_envio_falhar(banco):
+    lembrete = banco.adicionar(42, "remédio", AGORA, diario=True)
+    with pytest.raises(OSError):
+        simular_envio(banco, lembrete.id, erro=OSError("sem rede"))
+    assert banco.buscar(lembrete.id) == lembrete
+
+
+def test_diario_de_quem_bloqueou_o_bot_e_apagado(banco):
+    lembrete = banco.adicionar(42, "remédio", AGORA, diario=True)
+    agendados = []
+    simular_envio(banco, lembrete.id, erro=Forbidden("blocked"), agendados=agendados)
+    assert banco.todos() == []
+    assert agendados == []
+
+
+def test_lista_mostra_os_diarios(banco):
+    banco.adicionar(42, "remédio", datetime(2026, 9, 28, 8, 0, tzinfo=FUSO), diario=True)
+    [resposta] = simular_comando(listar_lembretes, [], banco)
+    assert "#1 todo dia às 08:00: remédio" in resposta

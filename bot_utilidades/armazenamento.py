@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS lembretes (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,  -- AUTOINCREMENT: números não são reaproveitados
     chat_id INTEGER NOT NULL,
     texto   TEXT    NOT NULL,
-    quando  TEXT    NOT NULL  -- data e hora em UTC, no FORMATO_DATA
+    quando  TEXT    NOT NULL,  -- data e hora em UTC, no FORMATO_DATA (a próxima, se for diário)
+    diario  INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1))  -- 1 = repete todo dia
 )
 """
 
@@ -33,6 +34,7 @@ class Lembrete:
     chat_id: int
     texto: str
     quando: datetime  # sempre com fuso (UTC)
+    diario: bool = False
 
 
 def para_texto(momento: datetime) -> str:
@@ -59,13 +61,21 @@ class Banco:
 
     @staticmethod
     def _lembrete(linha: sqlite3.Row) -> Lembrete:
-        return Lembrete(linha["id"], linha["chat_id"], linha["texto"], de_texto(linha["quando"]))
+        return Lembrete(
+            linha["id"],
+            linha["chat_id"],
+            linha["texto"],
+            de_texto(linha["quando"]),
+            bool(linha["diario"]),
+        )
 
-    def adicionar(self, chat_id: int, texto: str, quando: datetime) -> Lembrete:
+    def adicionar(
+        self, chat_id: int, texto: str, quando: datetime, diario: bool = False
+    ) -> Lembrete:
         with self._conectar() as conexao:
             cursor = conexao.execute(
-                "INSERT INTO lembretes (chat_id, texto, quando) VALUES (?, ?, ?)",
-                (chat_id, texto, para_texto(quando)),
+                "INSERT INTO lembretes (chat_id, texto, quando, diario) VALUES (?, ?, ?, ?)",
+                (chat_id, texto, para_texto(quando), int(diario)),
             )
         return self.buscar(cursor.lastrowid)
 
@@ -100,6 +110,14 @@ class Banco:
         with self._conectar() as conexao:
             cursor = conexao.execute("DELETE FROM lembretes WHERE id = ?", (id,))
         return cursor.rowcount > 0
+
+    def adiar(self, id: int, quando: datetime) -> Lembrete | None:
+        """Muda a data do lembrete (usado pelos diários depois de cada envio)."""
+        with self._conectar() as conexao:
+            conexao.execute(
+                "UPDATE lembretes SET quando = ? WHERE id = ?", (para_texto(quando), id)
+            )
+        return self.buscar(id)
 
     def cancelar(self, id: int, chat_id: int) -> Lembrete | None:
         """Apaga o lembrete só se ele for deste chat; devolve o que foi apagado."""

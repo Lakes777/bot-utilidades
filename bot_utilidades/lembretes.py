@@ -1,10 +1,13 @@
-"""Interpreta pedidos de lembrete como "10m tomar água" ou "1h30m reunião".
+"""Interpreta pedidos de lembrete como "10m tomar água", "18:30 reunião"
+ou "todo dia 8:00 tomar remédio".
 
-Não depende do Telegram: só entende o texto. Quem agenda é o bot.
+Não depende do Telegram: só entende o texto e faz as contas de horário.
+Quem salva e agenda é o bot.
 """
 
 import re
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 # Horários mostrados e digitados são sempre de Brasília, não importa o fuso do PC.
@@ -12,6 +15,10 @@ FUSO = ZoneInfo("America/Sao_Paulo")
 
 # Dias, horas e minutos, nessa ordem, todos opcionais: "2d", "1h30m", "45min"...
 FORMATO_TEMPO = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m(?:in)?)?$", re.IGNORECASE)
+
+# Horário do relógio: "8:00", "18:30". Só com dois-pontos, porque "18h" já quer
+# dizer "daqui a 18 horas".
+FORMATO_HORARIO = re.compile(r"^(\d{1,2}):(\d{2})$")
 
 # Os lembretes ficam salvos no banco, então sobrevivem a reinicializações;
 # o limite só evita erros de digitação como "1000d".
@@ -23,8 +30,13 @@ TAMANHO_MAXIMO = 500
 # Máximo de lembretes pendentes por chat, para ninguém encher o banco.
 LIMITE_POR_CHAT = 50
 
-USO = "Use assim: /lembrar 10m tomar água\nTempos aceitos: 10m, 2h, 1h30m, 1d"
-
+USO = (
+    "Use assim:\n"
+    "/lembrar 10m tomar água\n"
+    "/lembrar 18:30 ligar pra mãe\n"
+    "/lembrar todo dia 8:00 tomar remédio\n"
+    "Tempos aceitos: 10m, 2h, 1h30m, 1d"
+)
 
 USO_CANCELAR = "Use assim: /cancelar 3\nOs números aparecem em /lembretes"
 
@@ -35,6 +47,14 @@ TAMANHO_NA_LISTA = 40
 
 class LembreteError(Exception):
     """Pedido de lembrete inválido; a mensagem vai para o usuário."""
+
+
+@dataclass(frozen=True)
+class Pedido:
+    quando: datetime
+    texto: str
+    diario: bool = False
+    tempo: timedelta | None = None  # preenchido só em "daqui a X" ("10m", "2h"...)
 
 
 def ler_tempo(texto: str) -> timedelta:
@@ -52,14 +72,64 @@ def ler_tempo(texto: str) -> timedelta:
     return tempo
 
 
-def interpretar(palavras: list[str]) -> tuple[timedelta, str]:
-    """["10m", "tomar", "água"] -> (10 minutos, "tomar água")."""
+def ler_horario(texto: str) -> time:
+    """ler_horario("8:05") -> time(8, 5)."""
+    combinou = FORMATO_HORARIO.match(texto)
+    if not combinou:
+        raise LembreteError(f'Não entendi o horário "{texto}". Use, por exemplo, 8:00 ou 18:30.')
+    horas, minutos = int(combinou[1]), int(combinou[2])
+    if horas > 23 or minutos > 59:
+        raise LembreteError(f'O horário "{texto}" não existe.')
+    return time(horas, minutos)
+
+
+def proxima_vez(horario: time, agora: datetime) -> datetime:
+    """A próxima vez que o relógio de Brasília marca o horário: hoje ou amanhã."""
+    agora = agora.astimezone(FUSO)
+    momento = datetime.combine(agora.date(), horario, tzinfo=FUSO)
+    if momento <= agora:
+        momento = datetime.combine(agora.date() + timedelta(days=1), horario, tzinfo=FUSO)
+    return momento
+
+
+def interpretar(palavras: list[str], agora: datetime) -> Pedido:
+    """["10m", "tomar", "água"] -> Pedido(quando=agora + 10 minutos, texto="tomar água").
+
+    Também entende ["18:30", ...] (horário fixo) e ["todo", "dia", "8:00", ...] (diário).
+    """
+    diario = [p.lower() for p in palavras[:2]] == ["todo", "dia"]
+    if diario:
+        palavras = palavras[2:]
+
     if len(palavras) < 2:
         raise LembreteError(USO)
     texto = " ".join(palavras[1:])
     if len(texto) > TAMANHO_MAXIMO:
         raise LembreteError(f"O texto do lembrete pode ter até {TAMANHO_MAXIMO} caracteres.")
-    return ler_tempo(palavras[0]), texto
+
+    if FORMATO_HORARIO.match(palavras[0]) or diario:
+        return Pedido(proxima_vez(ler_horario(palavras[0]), agora), texto, diario=diario)
+
+    tempo = ler_tempo(palavras[0])
+    return Pedido(agora + tempo, texto, tempo=tempo)
+
+
+def confirmar(pedido: Pedido, agora: datetime) -> str:
+    """A mensagem que o bot responde depois de salvar o pedido."""
+    quando = pedido.quando.astimezone(FUSO)
+    dia = "hoje" if quando.date() == agora.astimezone(FUSO).date() else "amanhã"
+
+    if pedido.diario:
+        return (
+            f"✅ Combinado! Todo dia às {quando:%H:%M} eu te lembro: {pedido.texto}\n"
+            f"O primeiro é {dia}."
+        )
+    if pedido.tempo is None:
+        return f"✅ Combinado! {dia.capitalize()} às {quando:%H:%M} eu te lembro: {pedido.texto}"
+    return (
+        f"✅ Combinado! Daqui a {descrever(pedido.tempo)} "
+        f"({descrever_horario(quando, agora)}) eu te lembro: {pedido.texto}"
+    )
 
 
 def ler_numero(palavras: list[str]) -> int:
@@ -86,12 +156,17 @@ def descrever(tempo: timedelta) -> str:
     return "".join(f"{valor}{unidade}" for valor, unidade in partes if valor)
 
 
-def descrever_horario(momento: datetime, agora: datetime) -> str:
-    """"às 14:30" se for hoje; "em 28/09 às 14:30" se for outro dia."""
+def data_e_hora(momento: datetime, agora: datetime) -> str:
+    """"hoje às 14:30", "28/09 às 14:30" ou, em outro ano, "02/01/2027 às 09:00"."""
     momento = momento.astimezone(FUSO)
     agora = agora.astimezone(FUSO)
     if momento.date() == agora.date():
-        return f"às {momento:%H:%M}"
-    if momento.year == agora.year:
-        return f"em {momento:%d/%m} às {momento:%H:%M}"
-    return f"em {momento:%d/%m/%Y} às {momento:%H:%M}"
+        return f"hoje às {momento:%H:%M}"
+    data = f"{momento:%d/%m}" if momento.year == agora.year else f"{momento:%d/%m/%Y}"
+    return f"{data} às {momento:%H:%M}"
+
+
+def descrever_horario(momento: datetime, agora: datetime) -> str:
+    """"às 14:30" se for hoje; "em 28/09 às 14:30" se for outro dia."""
+    texto = data_e_hora(momento, agora)
+    return texto.removeprefix("hoje ") if texto.startswith("hoje ") else f"em {texto}"

@@ -90,3 +90,23 @@ def test_cancela_so_do_proprio_chat(tmp_path):
     assert banco.cancelar(lembrete.id, chat_id=1) == lembrete
     assert banco.buscar(lembrete.id) is None
     assert banco.cancelar(lembrete.id, chat_id=1) is None
+
+
+def test_lembrete_diario(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    assert banco.adicionar(1, "avulso", QUANDO).diario is False
+    diario = banco.adicionar(1, "remédio", QUANDO, diario=True)
+    assert diario.diario is True
+    assert Banco(tmp_path / "lembretes.db").buscar(diario.id).diario is True
+
+
+def test_adiar(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    diario = banco.adicionar(1, "remédio", QUANDO, diario=True)
+    amanha = QUANDO + timedelta(days=1)
+
+    adiado = banco.adiar(diario.id, amanha)
+
+    assert adiado.quando == amanha
+    assert adiado.diario and adiado.texto == "remédio"
+    assert banco.buscar(diario.id) == adiado
