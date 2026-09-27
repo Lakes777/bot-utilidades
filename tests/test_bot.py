@@ -11,8 +11,10 @@ from bot_utilidades.armazenamento import Banco
 from bot_utilidades.bot import (
     configurar_logs,
     criar_app,
+    cancelar,
     enviar_lembrete,
     lembrar,
+    listar_lembretes,
     reagendar,
 )
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -38,7 +40,9 @@ def comandos_registrados(app) -> set[str]:
 
 def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
-    esperados = {"start", "ajuda", "bitcoin", "dolar", "clima", "lembrar"}
+    esperados = {
+        "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
+    }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
 
@@ -185,3 +189,83 @@ def test_reagenda_os_lembretes_salvos(banco):
     assert jobs[f"lembrete-{futuro.id}"].job.trigger.run_date == futuro.quando
     # Sem isso, o lembrete vencido seria descartado em silêncio pelo agendador.
     assert jobs[f"lembrete-{antigo.id}"].job.misfire_grace_time is None
+
+
+def simular_comando(funcao, args, banco, chat_id=42, jobs=()):
+    """Roda um comando com Update/Context falsos e devolve as respostas."""
+    falso = Falso()
+    update = SimpleNamespace(
+        message=SimpleNamespace(reply_text=falso.gravar("reply_text")),
+        effective_chat=SimpleNamespace(id=chat_id),
+    )
+    context = SimpleNamespace(
+        args=args,
+        bot_data={"banco": banco},
+        job_queue=SimpleNamespace(
+            get_jobs_by_name=lambda nome: [job for job in jobs if job.name == nome]
+        ),
+    )
+    asyncio.run(funcao(update, context))
+    return [args[0] for nome, args, _ in falso.chamadas if nome == "reply_text"]
+
+
+def test_lista_so_os_lembretes_do_chat(banco):
+    banco.adicionar(42, "pagar boleto", AGORA + timedelta(days=1))
+    banco.adicionar(7, "de outra pessoa", AGORA)
+    banco.adicionar(42, "tomar água " + "a" * 100, AGORA + timedelta(minutes=10))
+
+    [resposta] = simular_comando(listar_lembretes, [], banco)
+    assert resposta == (
+        "Seus lembretes:\n"
+        "#3 às 10:10: tomar água aaaaaaaaaaaaaaaaaaaaaaaaaaaa…\n"
+        "#1 em 28/09 às 10:00: pagar boleto\n"
+        "\nPara cancelar: /cancelar número"
+    )
+
+
+def test_lista_vazia_ensina_a_criar(banco):
+    [resposta] = simular_comando(listar_lembretes, [], banco)
+    assert resposta.startswith("Você não tem lembretes pendentes")
+
+
+def test_lista_cheia_cabe_numa_mensagem(banco):
+    for _ in range(LIMITE_POR_CHAT):
+        banco.adicionar(42, "x" * 500, AGORA + timedelta(days=300))
+    [resposta] = simular_comando(listar_lembretes, [], banco)
+    assert len(resposta) <= 4096  # limite de uma mensagem do Telegram
+
+
+class JobFalso:
+    def __init__(self, name):
+        self.name = name
+        self.removido = False
+
+    def schedule_removal(self):
+        self.removido = True
+
+
+def test_cancelar_apaga_e_tira_do_agendador(banco):
+    lembrete = banco.adicionar(42, "pagar boleto", AGORA)
+    job, outro = JobFalso(f"lembrete-{lembrete.id}"), JobFalso("lembrete-99")
+
+    [resposta] = simular_comando(cancelar, ["#1"], banco, jobs=[job, outro])
+
+    assert resposta == "🗑️ Lembrete #1 cancelado: pagar boleto"
+    assert banco.todos() == []
+    assert job.removido and not outro.removido
+
+
+def test_nao_cancela_lembrete_de_outro_chat(banco):
+    lembrete = banco.adicionar(7, "de outra pessoa", AGORA)
+    job = JobFalso(f"lembrete-{lembrete.id}")
+
+    [resposta] = simular_comando(cancelar, ["1"], banco, chat_id=42, jobs=[job])
+
+    assert resposta == "⚠️ Não achei o lembrete #1. Veja os seus em /lembretes"
+    assert banco.buscar(lembrete.id) == lembrete
+    assert not job.removido
+
+
+def test_cancelar_sem_numero_mostra_como_usar(banco):
+    [resposta] = simular_comando(cancelar, [], banco)
+    assert resposta.startswith("⚠️ Use assim: /cancelar 3")

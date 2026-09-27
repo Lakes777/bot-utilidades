@@ -7,7 +7,9 @@ from bot_utilidades.lembretes import (
     LembreteError,
     descrever,
     descrever_horario,
+    encurtar,
     interpretar,
+    ler_numero,
     ler_tempo,
 )
 
@@ -90,3 +92,21 @@ AGORA = datetime(2026, 9, 27, 10, 0, tzinfo=FUSO)
 )
 def test_descreve_horario(momento, esperado):
     assert descrever_horario(momento, AGORA) == esperado
+
+
+@pytest.mark.parametrize(("palavras", "esperado"), [(["3"], 3), (["#12"], 12)])
+def test_le_numero(palavras, esperado):
+    assert ler_numero(palavras) == esperado
+
+
+@pytest.mark.parametrize("palavras", [[], ["tres"], ["3", "4"], ["-3"], ["3.5"], ["#"]])
+def test_numero_invalido_mostra_como_usar(palavras):
+    with pytest.raises(LembreteError, match="Use assim: /cancelar"):
+        ler_numero(palavras)
+
+
+def test_encurta_textos_longos():
+    assert encurtar("tomar água") == "tomar água"
+    assert encurtar("a" * 40) == "a" * 40
+    assert encurtar("a" * 41) == "a" * 39 + "…"
+    assert len(encurtar("a" * 500)) == 40

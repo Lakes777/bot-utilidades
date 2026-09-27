@@ -69,3 +69,24 @@ def test_numeros_nao_sao_reaproveitados(tmp_path):
     # Sem AUTOINCREMENT o SQLite devolveria o 1 de novo, e um /cancelar 1
     # atrasado apagaria o lembrete errado.
     assert banco.adicionar(42, "b", QUANDO).id == 2
+
+
+def test_lembretes_do_chat(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    banco.adicionar(1, "depois", QUANDO + timedelta(hours=1))
+    banco.adicionar(2, "de outra pessoa", QUANDO)
+    banco.adicionar(1, "antes", QUANDO)
+    assert [l.texto for l in banco.do_chat(1)] == ["antes", "depois"]
+    assert banco.do_chat(3) == []
+
+
+def test_cancela_so_do_proprio_chat(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    lembrete = banco.adicionar(1, "meu", QUANDO)
+
+    assert banco.cancelar(lembrete.id, chat_id=2) is None
+    assert banco.buscar(lembrete.id) == lembrete
+
+    assert banco.cancelar(lembrete.id, chat_id=1) == lembrete
+    assert banco.buscar(lembrete.id) is None
+    assert banco.cancelar(lembrete.id, chat_id=1) is None

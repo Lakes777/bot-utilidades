@@ -26,6 +26,13 @@ LIMITE_POR_CHAT = 50
 USO = "Use assim: /lembrar 10m tomar água\nTempos aceitos: 10m, 2h, 1h30m, 1d"
 
 
+USO_CANCELAR = "Use assim: /cancelar 3\nOs números aparecem em /lembretes"
+
+# Na lista, textos longos são cortados para a mensagem caber no limite do Telegram
+# mesmo com LIMITE_POR_CHAT lembretes.
+TAMANHO_NA_LISTA = 40
+
+
 class LembreteError(Exception):
     """Pedido de lembrete inválido; a mensagem vai para o usuário."""
 
@@ -53,6 +60,21 @@ def interpretar(palavras: list[str]) -> tuple[timedelta, str]:
     if len(texto) > TAMANHO_MAXIMO:
         raise LembreteError(f"O texto do lembrete pode ter até {TAMANHO_MAXIMO} caracteres.")
     return ler_tempo(palavras[0]), texto
+
+
+def ler_numero(palavras: list[str]) -> int:
+    """["3"] ou ["#3"] -> 3."""
+    if len(palavras) != 1:
+        raise LembreteError(USO_CANCELAR)
+    numero = palavras[0].removeprefix("#")
+    if not numero.isdecimal():
+        raise LembreteError(USO_CANCELAR)
+    return int(numero)
+
+
+def encurtar(texto: str, tamanho: int = TAMANHO_NA_LISTA) -> str:
+    """encurtar("pagar o boleto da faculdade", 10) -> "pagar o b…"."""
+    return texto if len(texto) <= tamanho else texto[: tamanho - 1] + "…"
 
 
 def descrever(tempo: timedelta) -> str:

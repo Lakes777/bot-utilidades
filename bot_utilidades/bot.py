@@ -22,6 +22,8 @@ COMANDOS = [
     BotCommand("dolar", "cotação do dólar"),
     BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
     BotCommand("lembrar", "lembrete, ex.: /lembrar 10m tomar água"),
+    BotCommand("lembretes", "lista seus lembretes pendentes"),
+    BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
     BotCommand("ajuda", "lista de comandos"),
 ]
 
@@ -99,7 +101,8 @@ async def lembrar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if banco.contar(chat_id) >= lembretes.LIMITE_POR_CHAT:
         await update.message.reply_text(
-            f"⚠️ Você já tem {lembretes.LIMITE_POR_CHAT} lembretes pendentes."
+            f"⚠️ Você já tem {lembretes.LIMITE_POR_CHAT} lembretes pendentes. "
+            "Cancele algum com /cancelar."
         )
         return
 
@@ -133,6 +136,44 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
     # Só apaga depois de enviar: se a internet cair no envio, o erro sobe,
     # o lembrete continua no banco e sai quando o bot for reiniciado.
     banco.remover(lembrete.id)
+
+
+async def listar_lembretes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    pendentes = context.bot_data["banco"].do_chat(update.effective_chat.id)
+    if not pendentes:
+        await update.message.reply_text(
+            "Você não tem lembretes pendentes.\nCrie um com /lembrar 10m tomar água"
+        )
+        return
+    hora = agora()
+    linhas = [
+        f"#{l.id} {lembretes.descrever_horario(l.quando, hora)}: {lembretes.encurtar(l.texto)}"
+        for l in pendentes
+    ]
+    await update.message.reply_text(
+        "Seus lembretes:\n" + "\n".join(linhas) + "\n\nPara cancelar: /cancelar número"
+    )
+
+
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        numero = lembretes.ler_numero(context.args)
+    except lembretes.LembreteError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+
+    # Filtrar pelo chat impede que alguém cancele o lembrete de outra pessoa chutando números.
+    lembrete = context.bot_data["banco"].cancelar(numero, update.effective_chat.id)
+    if lembrete is None:
+        await update.message.reply_text(
+            f"⚠️ Não achei o lembrete #{numero}. Veja os seus em /lembretes"
+        )
+        return
+
+    # Tira do agendador também (se sobrasse, enviar_lembrete não acharia nada no banco).
+    for job in context.job_queue.get_jobs_by_name(f"lembrete-{lembrete.id}"):
+        job.schedule_removal()
+    await update.message.reply_text(f"🗑️ Lembrete #{lembrete.id} cancelado: {lembrete.texto}")
 
 
 async def preparar(app: Application) -> None:
@@ -169,6 +210,8 @@ def criar_app(token: str, banco: Banco) -> Application:
     app.add_handler(CommandHandler("dolar", responder_cotacao(cotacoes.DOLAR)))
     app.add_handler(CommandHandler("clima", responder_clima))
     app.add_handler(CommandHandler("lembrar", lembrar))
+    app.add_handler(CommandHandler("lembretes", listar_lembretes))
+    app.add_handler(CommandHandler("cancelar", cancelar))
     return app
 
 

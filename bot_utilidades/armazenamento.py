@@ -80,6 +80,14 @@ class Banco:
             linhas = conexao.execute("SELECT * FROM lembretes ORDER BY quando, id").fetchall()
         return [self._lembrete(linha) for linha in linhas]
 
+    def do_chat(self, chat_id: int) -> list[Lembrete]:
+        """Os lembretes de um chat, do mais próximo ao mais distante."""
+        with self._conectar() as conexao:
+            linhas = conexao.execute(
+                "SELECT * FROM lembretes WHERE chat_id = ? ORDER BY quando, id", (chat_id,)
+            ).fetchall()
+        return [self._lembrete(linha) for linha in linhas]
+
     def contar(self, chat_id: int) -> int:
         with self._conectar() as conexao:
             [total] = conexao.execute(
@@ -92,3 +100,14 @@ class Banco:
         with self._conectar() as conexao:
             cursor = conexao.execute("DELETE FROM lembretes WHERE id = ?", (id,))
         return cursor.rowcount > 0
+
+    def cancelar(self, id: int, chat_id: int) -> Lembrete | None:
+        """Apaga o lembrete só se ele for deste chat; devolve o que foi apagado."""
+        with self._conectar() as conexao:
+            linha = conexao.execute(
+                "SELECT * FROM lembretes WHERE id = ? AND chat_id = ?", (id, chat_id)
+            ).fetchone()
+            if linha is None:
+                return None
+            conexao.execute("DELETE FROM lembretes WHERE id = ?", (id,))
+        return self._lembrete(linha)
