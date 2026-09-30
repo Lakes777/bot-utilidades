@@ -75,6 +75,40 @@ python -m bot_utilidades
 
 Com o programa rodando, abra a conversa com o seu bot no Telegram e mande `/start`. Para desligar, aperte `Ctrl+C` no terminal.
 
+## Rodando 24 horas (Oracle Cloud)
+
+O bot fica ligado numa máquina virtual gratuita da Oracle Cloud (Always Free, `VM.Standard.E2.1.Micro`: 1 GB de memória, Ubuntu 24.04), onde usa cerca de 45 MB. Ele roda como um serviço do **systemd**, que o liga junto com a máquina e o reinicia sozinho se ele cair:
+
+```ini
+# /etc/systemd/system/bot-utilidades.service
+[Unit]
+Description=Bot de utilidades do Telegram
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/bot-utilidades
+ExecStart=/home/ubuntu/bot-utilidades/.venv/bin/python -m bot_utilidades
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Como foi montado: 1 GB de swap (a máquina tem só 1 GB de RAM), fuso `America/Sao_Paulo`, atualizações de segurança automáticas (`unattended-upgrades`) e acesso só por chave SSH, sem senha. O `.env` e o banco de lembretes foram copiados com `scp`, e o `.env` fica com permissão `600` (só o dono lê). Um teste reiniciando a máquina confirmou que o bot volta sozinho.
+
+Comandos do dia a dia, a partir do PC:
+
+```bash
+ssh -i ~/.ssh/oracle_bot ubuntu@<ip> 'journalctl -u bot-utilidades -f'   # ver o log ao vivo
+ssh -i ~/.ssh/oracle_bot ubuntu@<ip> 'cd bot-utilidades && git pull && sudo systemctl restart bot-utilidades'   # atualizar
+```
+
+O bot não pode rodar em dois lugares ao mesmo tempo com o mesmo token (o Telegram só entrega cada mensagem a um deles), então, com o servidor ligado, não é preciso rodar no PC.
+
 ## Testes
 
 ```bash
@@ -128,4 +162,4 @@ bot-utilidades/
 - [x] Lembretes em horário fixo (`/lembrar 18:30 ...`) e repetidos todo dia
 - [x] Lista de usuários permitidos no `.env`
 - [x] Alerta de preço: avisar quando o Bitcoin (ou o dólar) chegar a um valor
-- [ ] Hospedar o bot num servidor para ficar online 24 horas
+- [x] Hospedar o bot num servidor para ficar online 24 horas (Oracle Cloud, systemd)
