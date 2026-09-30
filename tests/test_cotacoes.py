@@ -96,3 +96,22 @@ def test_sem_internet():
 
     with pytest.raises(CotacaoError, match="Não consegui acessar"):
         buscar_com_api_falsa(BITCOIN, responder)
+
+
+def test_chave_vai_no_cabecalho_e_nao_na_url():
+    recebidos = []
+
+    def responder(pedido):
+        recebidos.append(pedido)
+        return httpx.Response(200, json=RESPOSTA_BTC)
+
+    async def rodar():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(responder)) as cliente:
+            await buscar(BITCOIN, cliente, chave="minha-chave")
+            await buscar(BITCOIN, cliente)  # sem chave, nenhum cabeçalho
+
+    asyncio.run(rodar())
+    com, sem = recebidos
+    assert com.headers["x-api-key"] == "minha-chave"
+    assert "minha-chave" not in str(com.url)
+    assert "x-api-key" not in sem.headers

@@ -1,6 +1,11 @@
 import pytest
 
-from bot_utilidades.config import ConfigError, carregar_permitidos, carregar_token
+from bot_utilidades.config import (
+    ConfigError,
+    carregar_chave_cotacoes,
+    carregar_permitidos,
+    carregar_token,
+)
 
 TOKEN_FALSO = "123456789:" + "A" * 35
 
@@ -9,6 +14,7 @@ TOKEN_FALSO = "123456789:" + "A" * 35
 def sem_token_no_ambiente(monkeypatch):
     """Garante que o token real do seu .env nunca entre nos testes."""
     monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("AWESOMEAPI_TOKEN", raising=False)
 
 
 def test_le_token_do_arquivo_env(tmp_path):
@@ -62,3 +68,15 @@ def test_recusa_ids_invalidos(tmp_path, valor):
     env.write_text(f"USUARIOS_PERMITIDOS={valor}\n")
     with pytest.raises(ConfigError, match="valor inválido"):
         carregar_permitidos(env)
+
+
+def test_sem_chave_das_cotacoes(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("AWESOMEAPI_TOKEN=\n")
+    assert carregar_chave_cotacoes(env) is None
+
+
+def test_le_a_chave_das_cotacoes(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("AWESOMEAPI_TOKEN= abc123 \n")
+    assert carregar_chave_cotacoes(env) == "abc123"

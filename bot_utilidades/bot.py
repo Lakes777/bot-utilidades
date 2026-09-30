@@ -85,13 +85,19 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(AJUDA)
 
 
+async def buscar_cotacao(context: ContextTypes.DEFAULT_TYPE, moeda: cotacoes.Moeda) -> cotacoes.Cotacao:
+    """Busca a cotação com o cliente HTTP e a chave da API guardados no bot."""
+    return await cotacoes.buscar(
+        moeda, context.bot_data["http"], chave=context.bot_data.get("chave_cotacoes")
+    )
+
+
 def responder_cotacao(moeda: cotacoes.Moeda):
     """Cria o handler de um comando de cotação (/bitcoin, /dolar...)."""
 
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        cliente = context.bot_data["http"]
         try:
-            texto = cotacoes.formatar(await cotacoes.buscar(moeda, cliente))
+            texto = cotacoes.formatar(await buscar_cotacao(context, moeda))
         except cotacoes.CotacaoError as erro:
             texto = f"⚠️ {erro}"
         await update.message.reply_text(texto)
@@ -250,7 +256,7 @@ async def criar_alerta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     moeda = pedido.moeda
     descricao = alertas.descrever(moeda, pedido.direcao, pedido.valor)
     try:
-        preco = (await cotacoes.buscar(moeda, context.bot_data["http"])).preco
+        preco = (await buscar_cotacao(context, moeda)).preco
     except cotacoes.CotacaoError:
         preco = None  # sem a cotação agora, salva mesmo assim: a conferência tenta depois
 
@@ -332,7 +338,7 @@ async def conferir_alertas(context: ContextTypes.DEFAULT_TYPE) -> None:
     for par in {a.par for a in pendentes}:
         moeda = alertas.POR_PAR[par]
         try:
-            precos[par] = (await cotacoes.buscar(moeda, context.bot_data["http"])).preco
+            precos[par] = (await buscar_cotacao(context, moeda)).preco
         except cotacoes.CotacaoError as erro:
             log.warning("Sem cotação de %s para os alertas: %s", moeda.nome, erro)
 
@@ -381,7 +387,10 @@ async def fechar_http(app: Application) -> None:
 
 
 def criar_app(
-    token: str, banco: Banco, permitidos: frozenset[int] | None = None
+    token: str,
+    banco: Banco,
+    permitidos: frozenset[int] | None = None,
+    chave_cotacoes: str | None = None,
 ) -> Application:
     app = (
         Application.builder()
@@ -392,6 +401,7 @@ def criar_app(
     )
     app.bot_data["banco"] = banco
     app.bot_data["permitidos"] = permitidos
+    app.bot_data["chave_cotacoes"] = chave_cotacoes
     # Os grupos rodam em ordem (-2, -1, 0...). /meuid vem antes do porteiro para
     # funcionar para qualquer pessoa; o porteiro vem antes de todos os comandos.
     app.add_handler(CommandHandler("meuid", meuid), group=-2)

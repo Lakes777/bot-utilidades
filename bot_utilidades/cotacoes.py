@@ -53,9 +53,12 @@ def ler_resposta(moeda: Moeda, dados: dict) -> Cotacao:
         raise CotacaoError("A API de cotações respondeu num formato inesperado.") from erro
 
 
-async def buscar(moeda: Moeda, cliente: httpx.AsyncClient) -> Cotacao:
+async def buscar(moeda: Moeda, cliente: httpx.AsyncClient, chave: str | None = None) -> Cotacao:
+    """Busca a cotação. A chave vai no cabeçalho x-api-key, e não na URL, para não
+    aparecer em logs; e só nesta requisição, para não vazar para outras APIs."""
+    cabecalhos = {"x-api-key": chave} if chave else {}
     try:
-        resposta = await cliente.get(URL.format(par=moeda.par), timeout=10)
+        resposta = await cliente.get(URL.format(par=moeda.par), headers=cabecalhos, timeout=10)
         resposta.raise_for_status()
     except httpx.HTTPStatusError as erro:
         if erro.response.status_code == 429:

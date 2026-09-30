@@ -36,6 +36,16 @@ def carregar_token(arquivo_env: Path | None = None) -> str:
     return token
 
 
+def carregar_chave_cotacoes(arquivo_env: Path | None = None) -> str | None:
+    """Lê AWESOMEAPI_TOKEN, a chave gratuita da API de cotações (opcional).
+
+    Sem chave, a API limita as consultas por endereço, e em servidores na nuvem
+    ela costuma recusar logo de cara ("Quota exceeded"). None = sem chave.
+    """
+    load_dotenv(arquivo_env)
+    return os.getenv("AWESOMEAPI_TOKEN", "").strip() or None
+
+
 def carregar_permitidos(arquivo_env: Path | None = None) -> frozenset[int] | None:
     """Lê USUARIOS_PERMITIDOS (IDs do Telegram separados por vírgula).
 

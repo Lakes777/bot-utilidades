@@ -4,7 +4,12 @@ import sys
 
 from bot_utilidades.armazenamento import Banco
 from bot_utilidades.bot import configurar_logs, criar_app
-from bot_utilidades.config import ConfigError, carregar_permitidos, carregar_token
+from bot_utilidades.config import (
+    ConfigError,
+    carregar_chave_cotacoes,
+    carregar_permitidos,
+    carregar_token,
+)
 
 
 def main() -> None:
@@ -20,7 +25,10 @@ def main() -> None:
     else:
         print(f"Só para {len(permitidos)} usuário(s) permitido(s).")
     print("Bot rodando! Mande /start pra ele no Telegram. Ctrl+C para parar.")
-    criar_app(token, Banco(), permitidos).run_polling()
+    chave_cotacoes = carregar_chave_cotacoes()
+    if chave_cotacoes is None:
+        print("Sem AWESOMEAPI_TOKEN: as cotações usam o limite sem cadastro da API.")
+    criar_app(token, Banco(), permitidos, chave_cotacoes).run_polling()
 
 
 if __name__ == "__main__":

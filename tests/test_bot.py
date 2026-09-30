@@ -437,7 +437,7 @@ def cotacao_em(preco, falhar=False):
     """Troca cotacoes.buscar por uma que devolve sempre este preço (ou falha)."""
     consultas = []
 
-    async def buscar(moeda, cliente):
+    async def buscar(moeda, cliente, chave=None):
         consultas.append(moeda.par)
         if falhar:
             raise cotacoes.CotacaoError("fora do ar")
@@ -589,7 +589,7 @@ def test_falha_de_rede_devolve_o_alerta_com_o_mesmo_numero(banco, monkeypatch):
 def test_alerta_apagado_durante_a_conferencia_nao_e_enviado(banco, monkeypatch):
     alerta = banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("1"))
 
-    async def buscar(moeda, cliente):
+    async def buscar(moeda, cliente, chave=None):
         banco.cancelar_alerta(alerta.id, 42)  # o usuário manda /removeralerta enquanto isso
         return SimpleNamespace(preco=Decimal("420000"))
 
