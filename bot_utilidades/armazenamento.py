@@ -1,4 +1,4 @@
-"""Guarda os lembretes num arquivo SQLite, para sobreviverem a reinicializações.
+"""Guarda os lembretes e os alertas num arquivo SQLite, para sobreviverem a reinicializações.
 
 Usa o sqlite3 que já vem com o Python, com SQL escrito à mão, sem ORM.
 Cada operação abre e fecha a própria conexão.
@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 CAMINHO_PADRAO = Path("dados/lembretes.db")
@@ -26,6 +27,26 @@ CREATE TABLE IF NOT EXISTS lembretes (
     diario  INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1))  -- 1 = repete todo dia
 )
 """
+
+
+CRIAR_TABELA_ALERTAS = """
+CREATE TABLE IF NOT EXISTS alertas (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    par     TEXT    NOT NULL,  -- como a API chama a moeda, ex.: "BTC-BRL"
+    direcao TEXT    NOT NULL CHECK (direcao IN ('acima', 'abaixo')),
+    valor   TEXT    NOT NULL   -- texto, não REAL: REAL é float e perderia centavos
+)
+"""
+
+
+@dataclass(frozen=True)
+class Alerta:
+    id: int
+    chat_id: int
+    par: str
+    direcao: str
+    valor: Decimal
 
 
 @dataclass(frozen=True)
@@ -51,6 +72,7 @@ class Banco:
         self.caminho.parent.mkdir(parents=True, exist_ok=True)
         with self._conectar() as conexao:
             conexao.execute(CRIAR_TABELA)
+            conexao.execute(CRIAR_TABELA_ALERTAS)
 
     @contextmanager
     def _conectar(self) -> Iterator[sqlite3.Connection]:
@@ -129,3 +151,59 @@ class Banco:
                 return None
             conexao.execute("DELETE FROM lembretes WHERE id = ?", (id,))
         return self._lembrete(linha)
+
+    # ---------- Alertas de preço ----------
+
+    @staticmethod
+    def _alerta(linha: sqlite3.Row) -> Alerta:
+        return Alerta(
+            linha["id"], linha["chat_id"], linha["par"], linha["direcao"], Decimal(linha["valor"])
+        )
+
+    def adicionar_alerta(self, chat_id: int, par: str, direcao: str, valor: Decimal) -> Alerta:
+        with self._conectar() as conexao:
+            cursor = conexao.execute(
+                "INSERT INTO alertas (chat_id, par, direcao, valor) VALUES (?, ?, ?, ?)",
+                (chat_id, par, direcao, str(valor)),
+            )
+            linha = conexao.execute(
+                "SELECT * FROM alertas WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        return self._alerta(linha)
+
+    def todos_alertas(self) -> list[Alerta]:
+        """Todos os alertas pendentes, de todos os chats (para conferir as cotações)."""
+        with self._conectar() as conexao:
+            linhas = conexao.execute("SELECT * FROM alertas ORDER BY id").fetchall()
+        return [self._alerta(linha) for linha in linhas]
+
+    def alertas_do_chat(self, chat_id: int) -> list[Alerta]:
+        with self._conectar() as conexao:
+            linhas = conexao.execute(
+                "SELECT * FROM alertas WHERE chat_id = ? ORDER BY id", (chat_id,)
+            ).fetchall()
+        return [self._alerta(linha) for linha in linhas]
+
+    def restaurar_alerta(self, alerta: Alerta) -> None:
+        """Põe de volta um alerta apagado, com o mesmo número (usado se o envio falhar)."""
+        with self._conectar() as conexao:
+            conexao.execute(
+                "INSERT OR IGNORE INTO alertas (id, chat_id, par, direcao, valor) VALUES (?, ?, ?, ?, ?)",
+                (alerta.id, alerta.chat_id, alerta.par, alerta.direcao, str(alerta.valor)),
+            )
+
+    def remover_alerta(self, id: int) -> bool:
+        with self._conectar() as conexao:
+            cursor = conexao.execute("DELETE FROM alertas WHERE id = ?", (id,))
+        return cursor.rowcount > 0
+
+    def cancelar_alerta(self, id: int, chat_id: int) -> Alerta | None:
+        """Apaga o alerta só se ele for deste chat; devolve o que foi apagado."""
+        with self._conectar() as conexao:
+            linha = conexao.execute(
+                "SELECT * FROM alertas WHERE id = ? AND chat_id = ?", (id, chat_id)
+            ).fetchone()
+            if linha is None:
+                return None
+            conexao.execute("DELETE FROM alertas WHERE id = ?", (id,))
+        return self._alerta(linha)

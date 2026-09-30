@@ -20,12 +20,16 @@ Bot de Telegram que responde com a **cotação do Bitcoin e do dólar**, o **cli
 | `/lembrar todo dia 8:00 remédio` | Lembrete repetido todo dia no mesmo horário |
 | `/lembretes` | Lista os lembretes pendentes, com número |
 | `/cancelar 3` | Cancela o lembrete de número 3 (só os do próprio chat) |
+| `/alerta bitcoin acima 400000` | Avisa quando o preço chegar ao valor (também `dolar abaixo 5,20`); confere a cada 5 minutos e avisa uma vez só |
+| `/alertas` | Lista os alertas de preço, com número |
+| `/removeralerta 2` | Apaga o alerta de número 2 (só os do próprio chat) |
 | `/meuid` | Mostra o seu ID no Telegram (usado para fechar o bot, veja abaixo) |
 | `/ajuda` | Lista os comandos |
 
 - **Menu de comandos:** os comandos aparecem como sugestão ao digitar `/` no Telegram
 - **Erros explicados:** cidade inexistente, tempo em formato inválido, API fora do ar ou sem internet geram uma mensagem clara em vez de travar o bot
 - **Lembretes que não se perdem:** ficam salvos num banco SQLite (`dados/lembretes.db`). Se o bot for desligado, ao voltar ele reagenda tudo e manda na hora os que venceram enquanto estava fora, avisando o horário original
+- **Alertas que sobrevivem a reinicializações:** ficam no mesmo banco SQLite; se o preço já passou do valor na hora de criar, o bot avisa em vez de criar um alerta que dispararia na hora
 - **Horário de Brasília:** horários digitados e mostrados usam sempre o fuso `America/Sao_Paulo`, não importa o relógio do computador
 - **Formato brasileiro:** valores como `R$ 433.082,00` e datas como `24/09/2026 às 20:46`
 
@@ -78,7 +82,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 156 testes cobrindo a leitura do `.env`, as cotações, o clima, a interpretação dos lembretes (tempos, horários, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 202 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -111,6 +115,10 @@ bot-utilidades/
 - **"18:30" é horário, "18h" é duração:** só o formato com dois-pontos vira horário fixo, porque `/lembrar 18h ...` já queria dizer "daqui a 18 horas".
 - **Cancelar só o que é seu:** o `/cancelar` filtra pelo chat no próprio SQL, então chutar números não apaga lembretes de outra pessoa. Os números usam `AUTOINCREMENT` para nunca serem reaproveitados.
 - **Porteiro antes dos comandos:** a lista de permitidos é um handler que roda num grupo anterior ao de todos os comandos e interrompe o processamento (`ApplicationHandlerStop`) de quem não está nela. Assim nenhum comando novo fica aberto por esquecimento. O `/meuid` roda num grupo ainda anterior, para funcionar para qualquer pessoa.
+- **Alertas com uma consulta por moeda:** a cada 5 minutos, o bot junta os alertas de todos os chats, busca cada moeda uma vez só (e não uma vez por alerta, o que esbarraria no limite da API gratuita) e confere cada alerta com esse preço. O alerta é apagado depois de enviado, senão repetiria a mensagem a cada 5 minutos enquanto o preço ficasse do outro lado; se o envio falhar por falta de internet, ele continua salvo para a próxima conferência.
+- **Valor digitado do jeito brasileiro:** `400.000`, `400.000,50` e `5,20` são entendidos; um ponto seguido de exatamente três dígitos é de milhar, qualquer outro separa os centavos (`5.20`). Notação científica (`1e30`) é recusada, e um valor mais de 10 vezes longe do preço atual pede confirmação: no dólar, `5.500` viraria R$ 5.500 e o alerta nunca dispararia.
+- **Alertas também respeitam a lista de permitidos:** o porteiro só filtra mensagens recebidas, e os avisos são enviados pelo agendador. Por isso a conferência apaga os alertas de quem não está mais na lista, senão um estranho que criou alertas com o bot aberto continuaria recebendo avisos.
+- **Apagar antes de enviar:** o alerta é apagado logo antes do envio; se o usuário o removeu enquanto a cotação era buscada, o aviso não sai. Se o envio falhar por rede, ele volta com o mesmo número; se o chat bloqueou o bot ou não existe mais, fica apagado.
 - **Testes que falham quando devem:** para conferir que os testes protegem de verdade, introduzi bugs de propósito (liberar o log com o token, voltar ao arredondamento do banqueiro, mandar o lembrete para o chat errado, cancelar lembrete de outro chat, reagendar o diário a partir do horário antigo, deixar o porteiro passar, entre outros) e verifiquei que a suíte detectou cada um.
 
 ## Próximos passos
@@ -119,5 +127,5 @@ bot-utilidades/
 - [x] Listar e cancelar lembretes (`/lembretes`, `/cancelar`)
 - [x] Lembretes em horário fixo (`/lembrar 18:30 ...`) e repetidos todo dia
 - [x] Lista de usuários permitidos no `.env`
-- [ ] Alerta de preço: avisar quando o Bitcoin passar de um valor
+- [x] Alerta de preço: avisar quando o Bitcoin (ou o dólar) chegar a um valor
 - [ ] Hospedar o bot num servidor para ficar online 24 horas

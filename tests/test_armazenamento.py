@@ -1,3 +1,4 @@
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
 from bot_utilidades.armazenamento import Banco
@@ -110,3 +111,18 @@ def test_adiar(tmp_path):
     assert adiado.quando == amanha
     assert adiado.diario and adiado.texto == "remédio"
     assert banco.buscar(diario.id) == adiado
+
+
+def test_alertas_salvos_listados_e_apagados(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    a = banco.adicionar_alerta(1, "BTC-BRL", "acima", Decimal("400000.50"))
+    banco.adicionar_alerta(2, "USD-BRL", "abaixo", Decimal("5.20"))
+
+    assert a.valor == Decimal("400000.50")  # Decimal exato, sem virar float
+    assert [x.chat_id for x in banco.todos_alertas()] == [1, 2]
+    assert banco.alertas_do_chat(1) == [a]
+    assert banco.cancelar_alerta(a.id, chat_id=2) is None  # de outro chat, não apaga
+    assert banco.cancelar_alerta(a.id, chat_id=1) == a
+    assert not banco.remover_alerta(a.id)
+    # Reabrir o arquivo mantém o que sobrou (sobrevive a reinicializações).
+    assert len(Banco(tmp_path / "lembretes.db").todos_alertas()) == 1

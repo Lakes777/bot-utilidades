@@ -1,23 +1,29 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 from telegram import Bot, Message, Update, User
-from telegram.error import Forbidden
+from telegram.error import BadRequest, Forbidden
 
-from bot_utilidades import bot
+from bot_utilidades import bot, cotacoes
 from bot_utilidades.armazenamento import Banco
 from bot_utilidades.bot import (
     configurar_logs,
     criar_app,
     cancelar,
+    conferir_alertas,
+    criar_alerta,
     enviar_lembrete,
     lembrar,
+    listar_alertas,
     listar_lembretes,
     reagendar,
+    remover_alerta,
 )
+from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
 
 TOKEN_FALSO = "123456789:" + "A" * 35
@@ -56,6 +62,7 @@ def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
         "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
+        "alerta", "alertas", "removeralerta",
     }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
@@ -420,3 +427,210 @@ def test_meuid_ensina_a_fechar_o_bot(banco, respostas_do_bot):
     processar(app, mensagem_de(555, "/meuid"))
     [(_, texto)] = respostas_do_bot
     assert texto.endswith("coloque no .env:\nUSUARIOS_PERMITIDOS=555")
+
+
+
+# ---------- Alertas de preço ----------
+
+
+def cotacao_em(preco, falhar=False):
+    """Troca cotacoes.buscar por uma que devolve sempre este preço (ou falha)."""
+    consultas = []
+
+    async def buscar(moeda, cliente):
+        consultas.append(moeda.par)
+        if falhar:
+            raise cotacoes.CotacaoError("fora do ar")
+        return SimpleNamespace(preco=Decimal(preco))
+
+    return buscar, consultas
+
+
+def simular_alerta(funcao, args, banco, monkeypatch, preco="350000", falhar=False, chat_id=42):
+    buscar, _ = cotacao_em(preco, falhar)
+    monkeypatch.setattr(cotacoes, "buscar", buscar)
+    falso = Falso()
+    update = SimpleNamespace(
+        message=SimpleNamespace(reply_text=falso.gravar("reply_text")),
+        effective_chat=SimpleNamespace(id=chat_id),
+    )
+    context = SimpleNamespace(args=args, bot_data={"banco": banco, "http": None})
+    asyncio.run(funcao(update, context))
+    return [args[0] for _, args, _ in falso.chamadas]
+
+
+def test_criar_alerta_salva_e_mostra_o_preco_atual(banco, monkeypatch):
+    respostas = simular_alerta(criar_alerta, ["bitcoin", "acima", "400.000"], banco, monkeypatch)
+
+    [alerta] = banco.todos_alertas()
+    assert (alerta.chat_id, alerta.par, alerta.direcao, alerta.valor) == (
+        42, "BTC-BRL", "acima", Decimal("400000"),
+    )
+    assert respostas == [
+        f"✅ Alerta #{alerta.id} criado: Bitcoin acima de R$ 400.000,00.\n"
+        "Agora está em R$ 350.000,00.\n"
+        "Confiro a cada 5 minutos e aviso uma vez só."
+    ]
+
+
+def test_alerta_ja_atingido_nao_e_criado(banco, monkeypatch):
+    respostas = simular_alerta(criar_alerta, ["bitcoin", "acima", "300000"], banco, monkeypatch)
+
+    assert banco.todos_alertas() == []
+    assert "já está acima desse valor: agora está em R$ 350.000,00" in respostas[0]
+
+
+def test_alerta_criado_mesmo_sem_cotacao(banco, monkeypatch):
+    respostas = simular_alerta(
+        criar_alerta, ["dolar", "abaixo", "5,20"], banco, monkeypatch, falhar=True
+    )
+
+    assert len(banco.todos_alertas()) == 1
+    assert "Agora está" not in respostas[0]
+
+
+def test_alerta_com_erro_nao_salva(banco, monkeypatch):
+    respostas = simular_alerta(criar_alerta, ["euro", "acima", "6"], banco, monkeypatch)
+
+    assert banco.todos_alertas() == []
+    assert respostas[0].startswith("⚠️ Não conheço a moeda")
+
+
+def test_limite_de_alertas_por_chat(banco, monkeypatch):
+    for _ in range(LIMITE_ALERTAS):
+        banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("999999"))
+
+    respostas = simular_alerta(criar_alerta, ["btc", "acima", "500000"], banco, monkeypatch)
+
+    assert len(banco.todos_alertas()) == LIMITE_ALERTAS
+    assert "Você já tem 10 alertas" in respostas[0]
+
+
+def test_listar_e_remover_alertas_so_do_chat(banco, monkeypatch):
+    meu = banco.adicionar_alerta(42, "USD-BRL", "abaixo", Decimal("5.2"))
+    outro = banco.adicionar_alerta(7, "BTC-BRL", "acima", Decimal("400000"))
+
+    [lista] = simular_alerta(listar_alertas, [], banco, monkeypatch)
+    assert f"#{meu.id} Dólar abaixo de R$ 5,2000" in lista and f"#{outro.id}" not in lista
+
+    [resposta] = simular_alerta(remover_alerta, [str(outro.id)], banco, monkeypatch)
+    assert resposta.startswith(f"⚠️ Não achei o alerta #{outro.id}")
+    [resposta] = simular_alerta(remover_alerta, [f"#{meu.id}"], banco, monkeypatch)
+    assert resposta == f"🗑️ Alerta #{meu.id} apagado: Dólar abaixo de R$ 5,2000"
+    assert banco.todos_alertas() == [outro]
+
+    [vazia] = simular_alerta(listar_alertas, [], banco, monkeypatch)
+    assert vazia.startswith("Você não tem alertas.")
+    [sem_numero] = simular_alerta(remover_alerta, [], banco, monkeypatch)
+    assert "/removeralerta 2" in sem_numero
+
+
+def conferir(banco, monkeypatch, preco, erro=None, falhar=False):
+    buscar, consultas = cotacao_em(preco, falhar)
+    monkeypatch.setattr(cotacoes, "buscar", buscar)
+    falso = Falso()
+    enviar = falso.gravar("send_message")
+
+    async def send_message(*args, **kwargs):
+        if erro:
+            raise erro
+        await enviar(*args, **kwargs)
+
+    context = SimpleNamespace(
+        bot=SimpleNamespace(send_message=send_message), bot_data={"banco": banco, "http": None}
+    )
+    asyncio.run(conferir_alertas(context))
+    return [args for _, args, _ in falso.chamadas], consultas
+
+
+def test_conferir_avisa_e_apaga_so_os_atingidos(banco, monkeypatch):
+    atingido = banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("400000"))
+    longe = banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("500000"))
+    de_outro = banco.adicionar_alerta(7, "BTC-BRL", "abaixo", Decimal("450000"))
+
+    enviados, consultas = conferir(banco, monkeypatch, "420000")
+
+    assert consultas == ["BTC-BRL"]  # uma consulta por moeda, não uma por alerta
+    assert [chat for chat, _ in enviados] == [42, 7]
+    assert enviados[0][1].startswith("🔔 Alerta: Bitcoin acima de R$ 400.000,00")
+    assert banco.todos_alertas() == [longe]
+
+
+def test_conferir_sem_alertas_nem_consulta_a_api(banco, monkeypatch):
+    enviados, consultas = conferir(banco, monkeypatch, "420000")
+    assert (enviados, consultas) == ([], [])
+
+
+def test_conferir_sem_cotacao_mantem_os_alertas(banco, monkeypatch):
+    banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("1"))
+    enviados, _ = conferir(banco, monkeypatch, "0", falhar=True)
+    assert enviados == [] and len(banco.todos_alertas()) == 1
+
+
+def test_falha_no_envio_mantem_o_alerta(banco, monkeypatch):
+    banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("1"))
+    conferir(banco, monkeypatch, "420000", erro=TimeoutError("sem internet"))
+    assert len(banco.todos_alertas()) == 1
+
+
+@pytest.mark.parametrize("erro", [Forbidden("bloqueado"), BadRequest("Chat not found")])
+def test_chat_bloqueado_ou_apagado_perde_o_alerta(banco, monkeypatch, erro):
+    banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("1"))
+    conferir(banco, monkeypatch, "420000", erro=erro)
+    assert banco.todos_alertas() == []
+
+
+def test_falha_de_rede_devolve_o_alerta_com_o_mesmo_numero(banco, monkeypatch):
+    alerta = banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("1"))
+    conferir(banco, monkeypatch, "420000", erro=TimeoutError("sem internet"))
+    assert banco.todos_alertas() == [alerta]
+
+
+def test_alerta_apagado_durante_a_conferencia_nao_e_enviado(banco, monkeypatch):
+    alerta = banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("1"))
+
+    async def buscar(moeda, cliente):
+        banco.cancelar_alerta(alerta.id, 42)  # o usuário manda /removeralerta enquanto isso
+        return SimpleNamespace(preco=Decimal("420000"))
+
+    monkeypatch.setattr(cotacoes, "buscar", buscar)
+    falso = Falso()
+    context = SimpleNamespace(
+        bot=SimpleNamespace(send_message=falso.gravar("send_message")),
+        bot_data={"banco": banco, "http": None},
+    )
+    asyncio.run(conferir_alertas(context))
+    assert falso.chamadas == []
+
+
+def test_quem_saiu_da_lista_de_permitidos_nao_recebe_alertas(banco, monkeypatch):
+    banco.adicionar_alerta(42, "BTC-BRL", "acima", Decimal("1"))
+    estranho = banco.adicionar_alerta(99, "BTC-BRL", "acima", Decimal("1"))
+    buscar, _ = cotacao_em("420000")
+    monkeypatch.setattr(cotacoes, "buscar", buscar)
+    falso = Falso()
+    context = SimpleNamespace(
+        bot=SimpleNamespace(send_message=falso.gravar("send_message")),
+        bot_data={"banco": banco, "http": None, "permitidos": frozenset({42})},
+    )
+    asyncio.run(conferir_alertas(context))
+
+    assert [args[0] for _, args, _ in falso.chamadas] == [42]
+    assert estranho not in banco.todos_alertas()
+
+
+def test_valor_longe_do_preco_nao_cria_alerta(banco, monkeypatch):
+    respostas = simular_alerta(
+        criar_alerta, ["dolar", "acima", "5.500"], banco, monkeypatch, preco="5.17"
+    )
+    assert banco.todos_alertas() == []
+    assert respostas[0].startswith("⚠️ Entendi R$ 5.500,0000, mas o Dólar está em R$ 5,1700")
+
+
+def test_preparar_agenda_a_conferencia_dos_alertas(banco, monkeypatch):
+    app = criar_app(TOKEN_FALSO, banco)
+    monkeypatch.setattr(type(app.bot), "set_my_commands", lambda self, comandos: asyncio.sleep(0))
+    asyncio.run(bot.preparar(app))
+    [job] = app.job_queue.get_jobs_by_name("conferir-alertas")
+    assert job.callback is conferir_alertas
+    asyncio.run(app.bot_data["http"].aclose())
