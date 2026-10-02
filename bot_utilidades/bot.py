@@ -77,7 +77,7 @@ async def porteiro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     nome = update.effective_user.first_name
     await update.message.reply_text(
-        f"Olá, {nome}! Sou um bot de utilidades.\n\n{AJUDA}"
+        f"Olá, {nome}! Eu sou o Sidekick, seu bot de utilidades.\n\n{AJUDA}"
     )
 
 

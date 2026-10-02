@@ -1,8 +1,8 @@
-# Bot de Utilidades para Telegram
+# Sidekick
 
 [![Testes](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml/badge.svg)](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml)
 
-Bot de Telegram que responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade** e agenda **lembretes** que ficam salvos (inclusive diários). Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
+**Sidekick · bot de utilidades** para o Telegram: responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade** e agenda **lembretes** que ficam salvos (inclusive diários). Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
 
 <p align="center">
   <img src="docs/demo.gif" alt="Demonstração do bot no Telegram" width="320">
