@@ -14,6 +14,7 @@
 |---|---|
 | `/bitcoin` | Preço do Bitcoin em reais, com variação, máxima e mínima do dia |
 | `/dolar` | Cotação do dólar em reais, com as mesmas informações |
+| `/converter 100 usd` | Converte entre real, dólar e bitcoin: `0,5 btc`, `500 reais para dolar`, `R$ 50 em btc`, `100 usd em btc`; `500 reais` mostra em dólar e em bitcoin. Centavos com vírgula (`5,20`) |
 | `/clima Curitiba` | Temperatura, sensação térmica, umidade, vento, máxima/mínima e chance de chuva |
 | `/chuva Curitiba 7:00` | Todo dia às 7:00 confere a previsão hora a hora e avisa só se for chover (com 50% de chance ou mais), dizendo em que horas. `/chuva` mostra, `/chuva parar` desliga |
 | `/lembrar 1h30m reunião` | Lembrete depois do tempo pedido (`10m`, `2h`, `1h30m`, `1d`, até 365 dias) |
@@ -129,7 +130,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 535 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima e o aviso de chuva, a lista de compras, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 592 testes cobrindo a leitura do `.env`, as cotações, o conversor de moedas, os alertas de preço, o clima e o aviso de chuva, a lista de compras, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -140,6 +141,7 @@ bot-utilidades/
 │   ├── config.py        # lê e valida o token e os usuários permitidos
 │   ├── bot.py           # comandos do Telegram, porteiro e agendamento dos lembretes
 │   ├── cotacoes.py      # Bitcoin e dólar (AwesomeAPI)
+│   ├── conversor.py     # interpreta "/converter 100 usd em btc" e faz as contas
 │   ├── clima.py         # clima e chuva hora a hora (Open-Meteo)
 │   ├── listas.py        # interpreta "/add tarefas: estudar, ler" e monta a /lista
 │   ├── lembretes.py     # interpreta "1h30m", "18:30", "25/12 9:00", "todo dia 8:00" e "toda quinta 19:00"
@@ -188,7 +190,7 @@ bot-utilidades/
 - [x] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)
 - [x] Aviso de chuva de manhã
 - [x] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)
-- [ ] Conversor de moedas (`/converter 100 usd`)
+- [x] Conversor de moedas (`/converter 100 usd`)
 - [ ] Lançar gastos no Spendwise pelo Telegram (`/gasto 35 mercado`)
 - [ ] Avisar os prazos do Coursebook
 - [ ] Avisar episódio novo de anime do Hanami

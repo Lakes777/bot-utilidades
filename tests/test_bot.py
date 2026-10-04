@@ -31,6 +31,7 @@ from bot_utilidades.bot import (
     mostrar_lista,
     riscar_da_lista,
     limpar_lista,
+    converter_moedas,
 )
 from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -85,7 +86,7 @@ def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
         "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
-        "alerta", "alertas", "removeralerta", "mudar", "chuva", "add", "lista", "feito", "limpar",
+        "alerta", "alertas", "removeralerta", "mudar", "chuva", "add", "lista", "feito", "limpar", "converter",
     }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
@@ -1463,3 +1464,39 @@ def test_limpar(banco):
     ]
     assert simular_lista(limpar_lista, "/limpar", banco)[0].startswith("Use assim:")
     assert simular_lista(limpar_lista, "/limpar tudo", banco) == ["🗑️ Todas as listas apagadas (1 item)."]
+
+
+# ---------- Conversor ----------
+
+def simular_converter(args, monkeypatch, precos=None, falhar=False):
+    pedidas = []
+
+    async def buscar(moeda, http, chave=None):
+        pedidas.append(moeda.par)
+        if falhar:
+            raise cotacoes.CotacaoError("A API de cotações está fora do ar. Tente mais tarde.")
+        return SimpleNamespace(preco=Decimal(precos[moeda.par]))
+
+    monkeypatch.setattr(cotacoes, "buscar", buscar)
+    falso = Falso()
+    update = SimpleNamespace(message=SimpleNamespace(reply_text=falso.gravar("reply_text")))
+    context = SimpleNamespace(args=args, bot_data={"http": None})
+    asyncio.run(converter_moedas(update, context))
+    return [args[0] for _, args, _ in falso.chamadas], pedidas
+
+
+def test_converter_busca_so_as_cotacoes_necessarias(monkeypatch):
+    respostas, pedidas = simular_converter(["100", "usd"], monkeypatch, {"USD-BRL": "5.1723"})
+    assert respostas == ["💱 US$ 100,00 = R$ 517,23\nCotação: 1 USD = R$ 5,1723"]
+    assert pedidas == ["USD-BRL"]
+
+
+def test_converter_com_api_fora_do_ar(monkeypatch):
+    respostas, _ = simular_converter(["100", "usd"], monkeypatch, falhar=True)
+    assert respostas == ["⚠️ A API de cotações está fora do ar. Tente mais tarde."]
+
+
+def test_converter_sem_argumentos_nao_busca_nada(monkeypatch):
+    respostas, pedidas = simular_converter([], monkeypatch)
+    assert respostas[0].startswith("⚠️ Use assim:\n/converter 100 usd")
+    assert pedidas == []

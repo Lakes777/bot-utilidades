@@ -18,7 +18,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot_utilidades import alertas, clima, cotacoes, lembretes, listas
+from bot_utilidades import alertas, clima, conversor, cotacoes, lembretes, listas
 from bot_utilidades.armazenamento import AvisoChuva, Banco, Lembrete
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ ADIAMENTOS = {"adiar10": timedelta(minutes=10), "adiar60": timedelta(hours=1)}
 COMANDOS = [
     BotCommand("bitcoin", "preço do Bitcoin em reais"),
     BotCommand("dolar", "cotação do dólar"),
+    BotCommand("converter", "converte moedas, ex.: /converter 100 usd"),
     BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
     BotCommand("chuva", "avisa de manhã se for chover, ex.: /chuva Curitiba 7:00"),
     BotCommand(
@@ -120,6 +121,19 @@ def responder_cotacao(moeda: cotacoes.Moeda):
         await update.message.reply_text(texto)
 
     return handler
+
+
+async def converter_moedas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        pedido = conversor.interpretar(context.args)
+        precos = {
+            moeda.par: (await buscar_cotacao(context, moeda)).preco
+            for moeda in conversor.moedas_necessarias(pedido)
+        }
+        texto = conversor.converter(pedido, precos)
+    except (conversor.ConversorError, cotacoes.CotacaoError) as erro:
+        texto = f"⚠️ {erro}"
+    await update.message.reply_text(texto)
 
 
 async def responder_clima(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -785,6 +799,7 @@ def criar_app(
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(CommandHandler("bitcoin", responder_cotacao(cotacoes.BITCOIN)))
     app.add_handler(CommandHandler("dolar", responder_cotacao(cotacoes.DOLAR)))
+    app.add_handler(CommandHandler("converter", converter_moedas))
     app.add_handler(CommandHandler("clima", responder_clima))
     app.add_handler(CommandHandler("chuva", configurar_chuva))
     app.add_handler(CommandHandler("lembrar", lembrar))
