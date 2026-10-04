@@ -16,6 +16,7 @@
 | `/dolar` | Cotação do dólar em reais, com as mesmas informações |
 | `/converter 100 usd` | Converte entre real, dólar e bitcoin: `0,5 btc`, `500 reais para dolar`, `R$ 50 em btc`, `100 usd em btc`; `500 reais` mostra em dólar e em bitcoin. Centavos com vírgula (`5,20`) |
 | `/gasto 35,90 mercado pão` | Lança o gasto no Spendwise (valor, categoria e descrição); termina com `ontem` ou `20/09` para outra data |
+| `/prazos` | Provas, trabalhos e avaliações do Coursebook nos próximos 7 dias (`/prazos 14` para mais); `/prazos avisar 19:00` avisa todo dia o que vence até depois de amanhã, `/prazos parar` desliga |
 | `/clima Curitiba` | Temperatura, sensação térmica, umidade, vento, máxima/mínima e chance de chuva |
 | `/chuva Curitiba 7:00` | Todo dia às 7:00 confere a previsão hora a hora e avisa só se for chover (com 50% de chance ou mais), dizendo em que horas. `/chuva` mostra, `/chuva parar` desliga |
 | `/lembrar 1h30m reunião` | Lembrete depois do tempo pedido (`10m`, `2h`, `1h30m`, `1d`, até 365 dias) |
@@ -90,6 +91,16 @@ SPENDWISE_CHAVE=sw_...
 
 A chave só lança e lê gastos: não troca senha nem apaga a conta, e pode ser apagada no site a qualquer momento. Por segurança, o `/gasto` só funciona com `USUARIOS_PERMITIDOS` preenchido; com o bot aberto, qualquer pessoa lançaria gastos na sua conta.
 
+### Prazos do Coursebook (opcional)
+
+O `/prazos` lê as provas, trabalhos e avaliações do [Coursebook](https://github.com/Lakes777/painel-estudos), o painel de estudos que também fiz. No site dele, entre na conta, abra a tela **Dados > Chaves de acesso**, crie uma chave e cole no `.env`:
+
+```bash
+COURSEBOOK_CHAVE=cb_...
+```
+
+Essa chave só lê os prazos: não abre nenhuma outra rota do Coursebook. Como o `/gasto`, o `/prazos` só funciona com `USUARIOS_PERMITIDOS` preenchido.
+
 > **Atenção: o `.env` nunca vai para o Git** (está no `.gitignore`). Quem tem o token controla o bot; se ele vazar, gere outro no BotFather com `/revoke`.
 
 ## Como usar
@@ -141,7 +152,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 653 testes cobrindo a leitura do `.env`, as cotações, o conversor de moedas, o /gasto no Spendwise, os alertas de preço, o clima e o aviso de chuva, a lista de compras, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 708 testes cobrindo a leitura do `.env`, as cotações, o conversor de moedas, o /gasto no Spendwise, os prazos do Coursebook, os alertas de preço, o clima e o aviso de chuva, a lista de compras, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -152,6 +163,7 @@ bot-utilidades/
 │   ├── config.py        # lê e valida o token e os usuários permitidos
 │   ├── bot.py           # comandos do Telegram, porteiro e agendamento dos lembretes
 │   ├── cotacoes.py      # Bitcoin e dólar (AwesomeAPI)
+│   ├── coursebook.py    # lê os prazos do Coursebook (GET /api/prazos)
 │   ├── spendwise.py     # interpreta "/gasto 35 mercado" e lança pela API do Spendwise
 │   ├── conversor.py     # interpreta "/converter 100 usd em btc" e faz as contas
 │   ├── clima.py         # clima e chuva hora a hora (Open-Meteo)
@@ -174,7 +186,8 @@ bot-utilidades/
 - **Banco como fonte da verdade, `JobQueue` só como despertador:** cada lembrete é salvo no SQLite e o agendador guarda só o número dele. Na hora de enviar, o texto é lido do banco; um lembrete cancelado no meio do caminho simplesmente não é achado. O lembrete só é apagado **depois** que o Telegram confirma o envio: se a internet cair, ele continua salvo e sai quando o bot voltar. Datas ficam em UTC, sempre no mesmo formato de texto, para a ordem alfabética ser a cronológica.
 - **Lembrete atrasado não se perde:** por padrão, o agendador (APScheduler) descarta em silêncio um job que dispara com mais de 1 segundo de atraso, o que aconteceria com o PC hibernando ou com lembretes vencidos com o bot desligado. Confirmei isso com o agendador de verdade (um job 3 horas atrasado foi descartado) e desliguei o limite (`misfire_grace_time=None`).
 - **Diário conta a partir de agora:** depois de cada envio, o próximo é marcado para a próxima vez que o relógio chegar ao horário. Se o bot ficou 3 dias desligado, sai uma mensagem só, e não três.
-- **Gasto com chave, não com senha:** o bot não guarda a senha do Spendwise. Ele usa uma chave de acesso criada no site, enviada no cabeçalho `Authorization: Bearer` só no pedido para o Spendwise. Lá, a chave fica guardada só como SHA-256, não abre as rotas de conta e pode ser apagada a qualquer momento; as mensagens de erro do bot nunca mostram a chave (há teste para isso). Os testes usam um Spendwise falso (`httpx.MockTransport`).
+- **Gasto e prazos com chave, não com senha:** o bot não guarda a senha do Spendwise nem a do Coursebook. Cada um tem uma chave de acesso criada no próprio site, enviada no cabeçalho `Authorization: Bearer` só nos pedidos para aquele site. Nos dois, a chave fica guardada só como SHA-256, não abre as rotas de conta e pode ser apagada a qualquer momento; a do Coursebook, além disso, só lê os prazos. As mensagens de erro do bot nunca mostram a chave, o cliente HTTP não segue redirecionamentos (a chave não vai parar em outro site) e a URL precisa ser `https`. Os testes usam um Spendwise e um Coursebook falsos (`httpx.MockTransport`).
+- **Aviso de prazos como o de chuva:** o `/prazos avisar 19:00` usa o mesmo esquema do aviso de chuva (horário de Brasília, conferência na hora se o bot reiniciar logo depois, quieto quando não há nada perto). Se a chave sair do `.env`, o aviso diz que não conseguiu conferir em vez de ficar calado, e o `/prazos parar` continua funcionando.
 - **Aviso de chuva no horário de Brasília:** o `run_daily` da JobQueue recebe o horário com o fuso `America/Sao_Paulo`, então o aviso das 7:00 sai às 7:00 de Brasília mesmo que o servidor esteja em outro fuso (testado simulando a VM em Tóquio). A previsão também é pedida em horário de Brasília, para "a partir de agora" bater com o relógio do aviso. Se o bot reiniciar logo depois do horário (um deploy às 7:05), ele confere na hora, e a data da última conferência no banco evita aviso repetido. Sem chuva, o bot não manda nada; se a API falhar, avisa que não conseguiu conferir, para o silêncio não parecer "não vai chover".
 - **Botões que valem uma vez:** cada lembrete chega com os botões "Adiar 10 min", "Adiar 1 h" e "Feito". O texto do Telegram nos botões tem no máximo 64 bytes, então eles levam só um número; o texto do lembrete fica numa tabela `enviados` por 7 dias. O primeiro clique apaga o registro (filtrando pelo chat), então clicar duas vezes não cria dois lembretes. O limite de lembretes é conferido antes de gastar o botão.
 - **Banco antigo ganha a coluna nova sozinho:** os lembretes semanais precisaram de uma coluna `semanal`. Ao abrir, o bot confere as colunas da tabela (`PRAGMA table_info`) e, se faltar, acrescenta com `ALTER TABLE`, valendo 0 para os lembretes que já existiam. Assim o banco do servidor foi atualizado com um `git pull` e um reinício, sem perder nada. Depois, para os vários dias (`seg e qua`), veio a coluna `dias` com os números dos dias ("0,2"); os semanais criados antes dela continuam usando o dia da semana da data do próximo envio.
@@ -205,5 +218,5 @@ bot-utilidades/
 - [x] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)
 - [x] Conversor de moedas (`/converter 100 usd`)
 - [x] Lançar gastos no Spendwise pelo Telegram (`/gasto 35 mercado`)
-- [ ] Avisar os prazos do Coursebook
+- [x] Avisar os prazos do Coursebook
 - [ ] Avisar episódio novo de anime do Hanami

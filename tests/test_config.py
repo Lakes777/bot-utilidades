@@ -3,6 +3,7 @@ import pytest
 from bot_utilidades.config import (
     ConfigError,
     carregar_chave_cotacoes,
+    carregar_coursebook,
     carregar_permitidos,
     carregar_spendwise,
     carregar_token,
@@ -18,6 +19,8 @@ def sem_token_no_ambiente(monkeypatch):
     monkeypatch.delenv("AWESOMEAPI_TOKEN", raising=False)
     monkeypatch.delenv("SPENDWISE_CHAVE", raising=False)
     monkeypatch.delenv("SPENDWISE_URL", raising=False)
+    monkeypatch.delenv("COURSEBOOK_CHAVE", raising=False)
+    monkeypatch.delenv("COURSEBOOK_URL", raising=False)
 
 
 def test_le_token_do_arquivo_env(tmp_path):
@@ -131,3 +134,39 @@ def test_spendwise_recusa_url_insegura(tmp_path, url):
     env.write_text(f"SPENDWISE_CHAVE={CHAVE_SPENDWISE}\nSPENDWISE_URL={url}\n")
     with pytest.raises(ConfigError, match="https://"):
         carregar_spendwise(env)
+
+
+CHAVE_COURSEBOOK = "cb_" + "e" * 43
+
+
+def test_coursebook_desligado_sem_chave(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("COURSEBOOK_CHAVE=\n")
+    assert carregar_coursebook(env) is None
+
+
+def test_coursebook_com_url_padrao(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(f"COURSEBOOK_CHAVE={CHAVE_COURSEBOOK}\n")
+    assert carregar_coursebook(env) == ("https://painel-estudos-cyan.vercel.app", CHAVE_COURSEBOOK)
+
+
+@pytest.mark.parametrize("chave", ["sw_" + "a" * 40, "cb_curta", "cb_" + "ç" * 40])
+def test_coursebook_chave_invalida(tmp_path, chave):
+    env = tmp_path / ".env"
+    env.write_text(f"COURSEBOOK_CHAVE={chave}\n")
+    with pytest.raises(ConfigError, match="começa com cb_"):
+        carregar_coursebook(env)
+
+
+def test_coursebook_recusa_url_sem_https(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(f"COURSEBOOK_CHAVE={CHAVE_COURSEBOOK}\nCOURSEBOOK_URL=http://exemplo.com\n")
+    with pytest.raises(ConfigError, match="COURSEBOOK_URL precisa ser um endereço https://"):
+        carregar_coursebook(env)
+
+
+def test_coursebook_url_trocada_e_local(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(f"COURSEBOOK_CHAVE={CHAVE_COURSEBOOK}\nCOURSEBOOK_URL=http://localhost:5173/\n")
+    assert carregar_coursebook(env) == ("http://localhost:5173", CHAVE_COURSEBOOK)

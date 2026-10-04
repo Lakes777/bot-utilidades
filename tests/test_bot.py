@@ -9,7 +9,7 @@ from telegram import Bot, CallbackQuery, Message, Update, User
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import CallbackQueryHandler, CommandHandler
 
-from bot_utilidades import bot, clima, cotacoes, spendwise
+from bot_utilidades import bot, clima, coursebook, cotacoes, spendwise
 from bot_utilidades.armazenamento import AvisoChuva, Banco
 from bot_utilidades.bot import (
     configurar_logs,
@@ -33,6 +33,8 @@ from bot_utilidades.bot import (
     limpar_lista,
     converter_moedas,
     lancar_gasto,
+    responder_prazos,
+    conferir_prazos,
 )
 from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -87,7 +89,7 @@ def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
         "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
-        "alerta", "alertas", "removeralerta", "mudar", "chuva", "add", "lista", "feito", "limpar", "converter", "gasto",
+        "alerta", "alertas", "removeralerta", "mudar", "chuva", "add", "lista", "feito", "limpar", "converter", "gasto", "prazos",
     }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
@@ -1557,3 +1559,183 @@ def test_gasto_com_erro_da_api(monkeypatch):
     erro = spendwise.SpendwiseError("Não consegui acessar o Spendwise. Tente mais tarde.")
     respostas, _ = simular_gasto(["35", "mercado"], monkeypatch, erro=erro)
     assert respostas == ["⚠️ Não consegui acessar o Spendwise. Tente mais tarde."]
+
+
+# ---------- Prazos do Coursebook ----------
+
+CONFIG_COURSEBOOK = ("https://coursebook.exemplo", "cb_" + "f" * 43)
+UM_PRAZO = [coursebook.Prazo(AGORA.date(), 0, "Prova", "P1", "Cálculo", "19:00")]
+
+
+def simular_prazos(args, banco, monkeypatch, configuracao=CONFIG_COURSEBOOK,
+                   permitidos=frozenset({42}), prazos=UM_PRAZO, erro=None, jobs=()):
+    pedidos = []
+
+    async def buscar_prazos(url, chave, dias, http):
+        pedidos.append(dias)
+        if erro:
+            raise erro
+        return prazos
+
+    monkeypatch.setattr(coursebook, "buscar_prazos", buscar_prazos)
+    falso = Falso()
+    fila = JobQueueFalsa(jobs)
+    update = SimpleNamespace(
+        message=SimpleNamespace(reply_text=falso.gravar("reply_text")),
+        effective_chat=SimpleNamespace(id=42),
+    )
+    context = SimpleNamespace(
+        args=args, job_queue=fila,
+        bot_data={"banco": banco, "http": None, "coursebook": configuracao, "permitidos": permitidos},
+    )
+    asyncio.run(responder_prazos(update, context))
+    return [args[0] for _, args, _ in falso.chamadas], pedidos, fila
+
+
+def test_prazos_mostra_a_lista(banco, monkeypatch):
+    respostas, pedidos, _ = simular_prazos(["14"], banco, monkeypatch)
+    assert pedidos == [14]
+    assert respostas == ["📚 Prazos dos próximos 14 dias:\n• 27/09, domingo (hoje): Prova: P1 · Cálculo, aula às 19:00"]
+
+
+def test_prazos_sem_configuracao_ou_com_bot_aberto(banco, monkeypatch):
+    respostas, pedidos, _ = simular_prazos([], banco, monkeypatch, configuracao=None)
+    assert respostas[0].startswith("O /prazos não está configurado") and pedidos == []
+    respostas, pedidos, _ = simular_prazos([], banco, monkeypatch, permitidos=None)
+    assert "USUARIOS_PERMITIDOS" in respostas[0] and pedidos == []
+
+
+def test_prazos_com_erro(banco, monkeypatch):
+    erro = coursebook.CoursebookError("Não consegui acessar o Coursebook. Tente mais tarde.")
+    respostas, _, _ = simular_prazos([], banco, monkeypatch, erro=erro)
+    assert respostas == ["⚠️ Não consegui acessar o Coursebook. Tente mais tarde."]
+    respostas, pedidos, _ = simular_prazos(["100"], banco, monkeypatch)
+    assert respostas[0].startswith("⚠️ Diga quantos dias") and pedidos == []
+
+
+def test_prazos_avisar_e_parar(banco, monkeypatch):
+    respostas, pedidos, fila = simular_prazos(["avisar", "19:00"], banco, monkeypatch)
+    assert pedidos == []
+    assert banco.aviso_prazos(42).horario == time(19, 0)
+    [(callback, kwargs)] = fila.diarios
+    assert callback is conferir_prazos and kwargs["name"] == "prazos-42"
+    assert kwargs["time"].tzinfo == FUSO
+    assert respostas[0].startswith("📚 Combinado! Todo dia às 19:00")
+
+    respostas, _, fila = simular_prazos(["Parar"], banco, monkeypatch, jobs=["prazos-42"])
+    assert respostas == ["Aviso de prazos desligado."] and fila.removidos == ["prazos-42"]
+    assert banco.aviso_prazos(42) is None
+
+
+@pytest.mark.parametrize("args", [["avisar"], ["avisar", "19h"], ["avisar", "19:00", "x"]])
+def test_prazos_avisar_mal_escrito(banco, monkeypatch, args):
+    respostas, _, _ = simular_prazos(args, banco, monkeypatch)
+    assert respostas[0].startswith("⚠️ Use assim:") and banco.aviso_prazos(42) is None
+
+
+def rodar_conferencia_prazos(banco, monkeypatch, prazos=UM_PRAZO, erro=None,
+                             permitidos=frozenset({42}), configuracao=CONFIG_COURSEBOOK):
+    async def buscar_prazos(url, chave, dias, http):
+        if erro:
+            raise erro
+        return prazos
+
+    monkeypatch.setattr(coursebook, "buscar_prazos", buscar_prazos)
+    falso = Falso()
+    removidos = []
+    context = SimpleNamespace(
+        job=SimpleNamespace(data=42, schedule_removal=lambda: removidos.append(True)),
+        bot=SimpleNamespace(send_message=falso.gravar("send_message")),
+        bot_data={"banco": banco, "http": None, "permitidos": permitidos, "coursebook": configuracao},
+    )
+    asyncio.run(conferir_prazos(context))
+    return [args for _, args, _ in falso.chamadas], removidos
+
+
+def test_conferir_prazos_avisa_e_marca_o_dia(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(19, 0))
+    [(chat, mensagem)], _ = rodar_conferencia_prazos(banco, monkeypatch)
+    assert chat == 42 and mensagem.startswith("📚 Está chegando:\n• 27/09")
+    assert banco.aviso_prazos(42).conferido_em == AGORA.date()
+
+
+def test_conferir_prazos_sem_nada_perto_fica_quieto(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(19, 0))
+    envios, _ = rodar_conferencia_prazos(banco, monkeypatch, prazos=[])
+    assert envios == []
+
+
+def test_conferir_prazos_avisa_quando_falha(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(19, 0))
+    erro = coursebook.CoursebookError("O Coursebook está com problema agora. Tente mais tarde.")
+    [(_, mensagem)], _ = rodar_conferencia_prazos(banco, monkeypatch, erro=erro)
+    assert mensagem.startswith("⚠️ Não consegui conferir os prazos de hoje")
+
+
+def test_conferir_prazos_de_quem_nao_e_permitido(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(19, 0))
+    envios, removidos = rodar_conferencia_prazos(banco, monkeypatch, permitidos=frozenset({7}))
+    assert envios == [] and removidos == [True] and banco.aviso_prazos(42) is None
+
+
+def test_conferir_prazos_sem_chave_avisa_que_nao_conseguiu(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(19, 0))
+    [(_, mensagem)], removidos = rodar_conferencia_prazos(banco, monkeypatch, configuracao=None)
+    assert "COURSEBOOK_CHAVE saiu do .env" in mensagem and "/prazos parar" in mensagem
+    assert removidos == []
+
+
+def test_prazos_parar_funciona_sem_chave_e_com_bot_aberto(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(19, 0))
+    respostas, _, _ = simular_prazos(["parar"], banco, monkeypatch, configuracao=None, permitidos=None)
+    assert respostas == ["Aviso de prazos desligado."] and banco.aviso_prazos(42) is None
+
+
+def test_prazos_parar_sem_aviso(banco, monkeypatch):
+    respostas, _, _ = simular_prazos(["parar"], banco, monkeypatch)
+    assert respostas == ["Você não tinha aviso de prazos."]
+
+
+def test_conferir_prazos_de_quem_bloqueou_o_bot(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(19, 0))
+
+    async def buscar_prazos(url, chave, dias, http):
+        return UM_PRAZO
+
+    async def send_message(*args, **kwargs):
+        raise Forbidden("blocked")
+
+    monkeypatch.setattr(coursebook, "buscar_prazos", buscar_prazos)
+    removidos = []
+    context = SimpleNamespace(
+        job=SimpleNamespace(data=42, schedule_removal=lambda: removidos.append(True)),
+        bot=SimpleNamespace(send_message=send_message),
+        bot_data={"banco": banco, "http": None, "permitidos": frozenset({42}), "coursebook": CONFIG_COURSEBOOK},
+    )
+    asyncio.run(conferir_prazos(context))
+    assert banco.aviso_prazos(42) is None and removidos == [True]
+
+
+@pytest.mark.parametrize(
+    ("horario", "conferido", "esperados"),
+    [(time(9, 30), None, 2), (time(9, 30), AGORA.date(), 1), (time(7, 59), None, 1), (time(11, 0), None, 1)],
+)
+def test_reinicio_e_os_prazos(banco, monkeypatch, horario, conferido, esperados):
+    banco.salvar_aviso_prazos(42, horario)  # agora são 10:00
+    if conferido:
+        banco.marcar_prazos_conferidos(42, conferido)
+    app = criar_app(TOKEN_FALSO, banco)
+    monkeypatch.setattr(type(app.bot), "set_my_commands", lambda self, comandos: asyncio.sleep(0))
+    asyncio.run(bot.preparar(app))
+    asyncio.run(app.bot_data["http"].aclose())
+    assert len(app.job_queue.get_jobs_by_name("prazos-42")) == esperados
+
+
+def test_reinicio_confere_os_prazos_perdidos(banco, monkeypatch):
+    banco.salvar_aviso_prazos(42, time(9, 30))  # agora são 10:00
+    app = criar_app(TOKEN_FALSO, banco)
+    monkeypatch.setattr(type(app.bot), "set_my_commands", lambda self, comandos: asyncio.sleep(0))
+    asyncio.run(bot.preparar(app))
+    asyncio.run(app.bot_data["http"].aclose())
+    jobs = app.job_queue.get_jobs_by_name("prazos-42")
+    assert len(jobs) == 2 and all(job.callback is conferir_prazos for job in jobs)

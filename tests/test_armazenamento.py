@@ -312,3 +312,14 @@ def test_itens_da_lista(tmp_path):
     assert banco.itens_do_chat(42) == [estudar]
     assert banco.limpar_lista(42) == 1
     assert banco.contar_itens(7) == 1
+
+
+def test_aviso_de_prazos(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    banco.salvar_aviso_prazos(42, time(19, 0))
+    banco.marcar_prazos_conferidos(42, date(2026, 10, 4))
+    aviso = Banco(tmp_path / "lembretes.db").aviso_prazos(42)
+    assert (aviso.horario, aviso.conferido_em) == (time(19, 0), date(2026, 10, 4))
+    banco.salvar_aviso_prazos(42, time(8, 0))  # trocar o horário zera a conferência
+    assert banco.todos_avisos_prazos()[0].conferido_em is None
+    assert banco.apagar_aviso_prazos(42) and not banco.apagar_aviso_prazos(42)

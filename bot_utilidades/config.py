@@ -90,15 +90,42 @@ def carregar_spendwise(arquivo_env: Path | None = None) -> tuple[str, str] | Non
             "SPENDWISE_CHAVE com formato inválido. Ela começa com sw_ e aparece uma vez só, "
             'quando você cria a chave no Spendwise (Sua conta > Chaves de acesso).'
         )
-    url = os.getenv("SPENDWISE_URL", "").strip().rstrip("/") or SPENDWISE_URL_PADRAO
+    return ler_url("SPENDWISE_URL", SPENDWISE_URL_PADRAO), chave
+
+
+def ler_url(variavel: str, padrao: str) -> str:
+    """Lê o endereço de uma API que recebe chave; só aceita https (ou o próprio computador)."""
+    url = os.getenv(variavel, "").strip().rstrip("/") or padrao
     partes = urlsplit(url)
-    # Sem criptografia, só o próprio computador (um Spendwise rodando localmente).
+    # Sem criptografia, só o próprio computador (o projeto rodando localmente).
     seguro = partes.scheme == "https" or (
         partes.scheme == "http" and partes.hostname in ("localhost", "127.0.0.1")
     )
     if not seguro or not partes.hostname or partes.query or partes.fragment:
         raise ConfigError(
-            "SPENDWISE_URL precisa ser um endereço https:// sem ? nem # "
+            f"{variavel} precisa ser um endereço https:// sem ? nem # "
             "(a chave não pode ir sem criptografia)."
         )
-    return url, chave
+    return url
+
+
+COURSEBOOK_URL_PADRAO = "https://painel-estudos-cyan.vercel.app"
+FORMATO_CHAVE_COURSEBOOK = re.compile(r"^cb_[A-Za-z0-9_-]{20,}$")
+
+
+def carregar_coursebook(arquivo_env: Path | None = None) -> tuple[str, str] | None:
+    """Lê COURSEBOOK_CHAVE (e COURSEBOOK_URL, opcional) para o /prazos.
+
+    A chave é criada no site do Coursebook, na tela Dados > "Chaves de acesso".
+    Devolve (url, chave) ou None se a chave não foi configurada.
+    """
+    load_dotenv(arquivo_env)
+    chave = os.getenv("COURSEBOOK_CHAVE", "").strip()
+    if not chave:
+        return None
+    if not FORMATO_CHAVE_COURSEBOOK.match(chave):
+        raise ConfigError(
+            "COURSEBOOK_CHAVE com formato inválido. Ela começa com cb_ e aparece uma vez só, "
+            "quando você cria a chave no Coursebook (tela Dados > Chaves de acesso)."
+        )
+    return ler_url("COURSEBOOK_URL", COURSEBOOK_URL_PADRAO), chave

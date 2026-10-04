@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import httpx
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -18,8 +18,17 @@ from telegram.ext import (
     filters,
 )
 
-from bot_utilidades import alertas, clima, conversor, cotacoes, lembretes, listas, spendwise
-from bot_utilidades.armazenamento import AvisoChuva, Banco, Lembrete
+from bot_utilidades import (
+    alertas,
+    clima,
+    conversor,
+    coursebook,
+    cotacoes,
+    lembretes,
+    listas,
+    spendwise,
+)
+from bot_utilidades.armazenamento import AvisoChuva, AvisoPrazos, Banco, Lembrete
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +52,7 @@ COMANDOS = [
     BotCommand("mudar", "muda o horário de um lembrete, ex.: /mudar 3 20:00"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
     BotCommand("gasto", "lança no Spendwise, ex.: /gasto 35 mercado pão"),
+    BotCommand("prazos", "provas e trabalhos do Coursebook, ex.: /prazos ou /prazos 14"),
     BotCommand("add", "põe na lista, ex.: /add pão, leite ou /add tarefas: estudar"),
     BotCommand("lista", "mostra a lista de compras e tarefas"),
     BotCommand("feito", "risca da lista, ex.: /feito 2"),
@@ -159,7 +169,7 @@ USO_CHUVA = (
 
 # Se o bot estava parado (travado ou reiniciando) na hora do aviso, ainda confere
 # se voltar dentro deste prazo; depois disso, a manhã já passou e fica para amanhã.
-TOLERANCIA_CHUVA = timedelta(hours=2)
+TOLERANCIA_AVISO = timedelta(hours=2)
 
 
 def agendar_chuva(job_queue: JobQueue, aviso: AvisoChuva) -> None:
@@ -171,7 +181,7 @@ def agendar_chuva(job_queue: JobQueue, aviso: AvisoChuva) -> None:
         chat_id=aviso.chat_id,
         data=aviso.chat_id,
         name=f"chuva-{aviso.chat_id}",
-        job_kwargs={"misfire_grace_time": int(TOLERANCIA_CHUVA.total_seconds())},
+        job_kwargs={"misfire_grace_time": int(TOLERANCIA_AVISO.total_seconds())},
     )
 
 
@@ -292,6 +302,112 @@ async def lancar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f"⚠️ {erro}")
         return
     await update.message.reply_text(spendwise.confirmar(gasto, numero, hoje))
+
+
+def agendar_prazos(job_queue: JobQueue, aviso: AvisoPrazos) -> None:
+    for job in job_queue.get_jobs_by_name(f"prazos-{aviso.chat_id}"):
+        job.schedule_removal()
+    job_queue.run_daily(
+        conferir_prazos,
+        time=aviso.horario.replace(tzinfo=lembretes.FUSO),
+        chat_id=aviso.chat_id,
+        data=aviso.chat_id,
+        name=f"prazos-{aviso.chat_id}",
+        job_kwargs={"misfire_grace_time": int(TOLERANCIA_AVISO.total_seconds())},
+    )
+
+
+async def responder_prazos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    banco: Banco = context.bot_data["banco"]
+    chat_id = update.effective_chat.id
+    args = [palavra.lower() for palavra in context.args]
+    # O "parar" vem antes das outras conferências: desligar precisa funcionar
+    # mesmo se a chave saiu do .env depois de ligar o aviso.
+    if args == ["parar"]:
+        apagado = banco.apagar_aviso_prazos(chat_id)
+        for job in context.job_queue.get_jobs_by_name(f"prazos-{chat_id}"):
+            job.schedule_removal()
+        await update.message.reply_text(
+            "Aviso de prazos desligado." if apagado else "Você não tinha aviso de prazos."
+        )
+        return
+
+    configuracao = context.bot_data.get("coursebook")
+    if configuracao is None:
+        await update.message.reply_text(
+            "O /prazos não está configurado. Crie uma chave no Coursebook (tela Dados > "
+            "Chaves de acesso) e coloque no .env do bot: COURSEBOOK_CHAVE=cb_..."
+        )
+        return
+    if context.bot_data.get("permitidos") is None:
+        # Com o bot aberto, qualquer pessoa veria as provas e trabalhos do dono.
+        await update.message.reply_text(
+            "🔒 Por segurança, o /prazos só funciona com USUARIOS_PERMITIDOS preenchido no .env."
+        )
+        return
+
+    if args[:1] == ["avisar"]:
+        if len(args) != 2 or not lembretes.FORMATO_HORARIO.match(args[1]):
+            await update.message.reply_text(f"⚠️ {coursebook.USO}")
+            return
+        try:
+            horario = lembretes.ler_horario(args[1])
+        except lembretes.LembreteError as erro:
+            await update.message.reply_text(f"⚠️ {erro}")
+            return
+        aviso = banco.salvar_aviso_prazos(chat_id, horario)
+        agendar_prazos(context.job_queue, aviso)
+        await update.message.reply_text(
+            f"📚 Combinado! Todo dia às {horario:%H:%M} eu confiro o Coursebook e aviso o que "
+            "vence até depois de amanhã. Sem nada perto, fico quieto.\nPara desligar: /prazos parar"
+        )
+        return
+
+    url, chave = configuracao
+    try:
+        dias = coursebook.ler_dias(context.args)
+        prazos = await coursebook.buscar_prazos(url, chave, dias, context.bot_data["http"])
+    except coursebook.CoursebookError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+    await update.message.reply_text(coursebook.formatar(prazos, dias))
+
+
+async def conferir_prazos(context: ContextTypes.DEFAULT_TYPE) -> None:
+    banco: Banco = context.bot_data["banco"]
+    aviso = banco.aviso_prazos(context.job.data)
+    if aviso is None:  # desligado enquanto esperava
+        return
+    permitidos = context.bot_data.get("permitidos")
+    if permitidos is None or aviso.chat_id not in permitidos:
+        log.info("Chat %s não é permitido; aviso de prazos apagado", aviso.chat_id)
+        banco.apagar_aviso_prazos(aviso.chat_id)
+        context.job.schedule_removal()
+        return
+    banco.marcar_prazos_conferidos(aviso.chat_id, agora().date())
+    configuracao = context.bot_data.get("coursebook")
+    try:
+        if configuracao is None:
+            # Ficar quieto pareceria "nada vencendo": melhor avisar que não deu.
+            raise coursebook.CoursebookError(
+                "a COURSEBOOK_CHAVE saiu do .env do bot. Para desligar o aviso: /prazos parar"
+            )
+        url, chave = configuracao
+        prazos = await coursebook.buscar_prazos(
+            url, chave, coursebook.DIAS_DO_AVISO, context.bot_data["http"]
+        )
+    except coursebook.CoursebookError as erro:
+        mensagem = f"⚠️ Não consegui conferir os prazos de hoje: {erro}"
+    else:
+        mensagem = coursebook.aviso(prazos)
+    if mensagem is None:
+        return
+    try:
+        await context.bot.send_message(aviso.chat_id, mensagem)
+    except (Forbidden, BadRequest):
+        log.warning("Chat %s inacessível; aviso de prazos apagado", aviso.chat_id)
+        banco.apagar_aviso_prazos(aviso.chat_id)
+        context.job.schedule_removal()
 
 
 async def adicionar_na_lista(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -769,23 +885,36 @@ async def preparar(app: Application) -> None:
     app.bot_data["http"] = httpx.AsyncClient()
     await app.bot.set_my_commands(COMANDOS)
     reagendar(app)
-    reagendar_chuva(app)
+    reagendar_avisos_diarios(app)
     app.job_queue.run_repeating(
         conferir_alertas, interval=alertas.INTERVALO, first=30, name="conferir-alertas"
     )
 
 
-def reagendar_chuva(app: Application) -> None:
-    """Agenda os avisos de chuva salvos e confere já os que o reinício fez perder hoje."""
+def perdido_hoje(horario: time, conferido_em: date | None, hora: datetime) -> bool:
+    """Se o aviso diário era para pouco antes de agora e ainda não foi conferido hoje."""
+    horario_de_hoje = datetime.combine(hora.date(), horario, tzinfo=lembretes.FUSO)
+    perdido = horario_de_hoje <= hora < horario_de_hoje + TOLERANCIA_AVISO
+    return perdido and conferido_em != hora.date()
+
+
+def reagendar_avisos_diarios(app: Application) -> None:
+    """Agenda os avisos diários salvos (chuva e prazos) e confere já os que o reinício fez perder hoje."""
     hora = agora()
-    for aviso in app.bot_data["banco"].todos_avisos_chuva():
+    banco: Banco = app.bot_data["banco"]
+    for aviso in banco.todos_avisos_chuva():
         agendar_chuva(app.job_queue, aviso)
-        horario_de_hoje = datetime.combine(hora.date(), aviso.horario, tzinfo=lembretes.FUSO)
-        perdido = horario_de_hoje <= hora < horario_de_hoje + TOLERANCIA_CHUVA
-        if perdido and aviso.conferido_em != hora.date():
+        if perdido_hoje(aviso.horario, aviso.conferido_em, hora):
             app.job_queue.run_once(
                 conferir_chuva, when=0, chat_id=aviso.chat_id, data=aviso.chat_id,
                 name=f"chuva-{aviso.chat_id}",
+            )
+    for aviso in banco.todos_avisos_prazos():
+        agendar_prazos(app.job_queue, aviso)
+        if perdido_hoje(aviso.horario, aviso.conferido_em, hora):
+            app.job_queue.run_once(
+                conferir_prazos, when=0, chat_id=aviso.chat_id, data=aviso.chat_id,
+                name=f"prazos-{aviso.chat_id}",
             )
 
 
@@ -807,6 +936,7 @@ def criar_app(
     permitidos: frozenset[int] | None = None,
     chave_cotacoes: str | None = None,
     spendwise: tuple[str, str] | None = None,
+    coursebook: tuple[str, str] | None = None,
 ) -> Application:
     app = (
         Application.builder()
@@ -819,6 +949,7 @@ def criar_app(
     app.bot_data["permitidos"] = permitidos
     app.bot_data["chave_cotacoes"] = chave_cotacoes
     app.bot_data["spendwise"] = spendwise  # (url, chave) ou None
+    app.bot_data["coursebook"] = coursebook  # (url, chave) ou None
     # Os grupos rodam em ordem (-2, -1, 0...). /meuid vem antes do porteiro para
     # funcionar para qualquer pessoa; o porteiro vem antes de todos os comandos.
     app.add_handler(CommandHandler("meuid", meuid), group=-2)
@@ -835,6 +966,7 @@ def criar_app(
     app.add_handler(CommandHandler("cancelar", cancelar))
     app.add_handler(CommandHandler("mudar", mudar))
     app.add_handler(CallbackQueryHandler(responder_botao))
+    app.add_handler(CommandHandler("prazos", responder_prazos))
     app.add_handler(CommandHandler("gasto", lancar_gasto, filters=~filters.UpdateType.EDITED_MESSAGE))
     # Editar a mensagem do /add não deve acrescentar os itens de novo.
     app.add_handler(

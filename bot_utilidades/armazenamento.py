@@ -91,6 +91,22 @@ class AvisoChuva:
     conferido_em: date | None = None
 
 
+CRIAR_TABELA_PRAZOS = """
+CREATE TABLE IF NOT EXISTS avisos_prazos (
+    chat_id      INTEGER PRIMARY KEY,  -- um aviso por chat
+    horario      TEXT    NOT NULL,     -- "19:00", horário de Brasília
+    conferido_em TEXT                  -- última data em que os prazos foram conferidos
+)
+"""
+
+
+@dataclass(frozen=True)
+class AvisoPrazos:
+    chat_id: int
+    horario: time
+    conferido_em: date | None = None
+
+
 CRIAR_TABELA_ITENS = """
 CREATE TABLE IF NOT EXISTS itens (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,6 +173,7 @@ class Banco:
             conexao.execute(CRIAR_TABELA_ENVIADOS)
             conexao.execute(CRIAR_TABELA_CHUVA)
             conexao.execute(CRIAR_TABELA_ITENS)
+            conexao.execute(CRIAR_TABELA_PRAZOS)
             colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(lembretes)")}
             for coluna, acrescentar in COLUNAS_NOVAS.items():
                 if coluna not in colunas:
@@ -403,6 +420,49 @@ class Banco:
     def apagar_aviso_chuva(self, chat_id: int) -> bool:
         with self._conectar() as conexao:
             cursor = conexao.execute("DELETE FROM avisos_chuva WHERE chat_id = ?", (chat_id,))
+        return cursor.rowcount > 0
+
+    # ---------- Aviso de prazos do Coursebook ----------
+
+    @staticmethod
+    def _aviso_prazos(linha: sqlite3.Row) -> AvisoPrazos:
+        conferido = linha["conferido_em"]
+        return AvisoPrazos(
+            linha["chat_id"],
+            time.fromisoformat(linha["horario"]),
+            date.fromisoformat(conferido) if conferido else None,
+        )
+
+    def salvar_aviso_prazos(self, chat_id: int, horario: time) -> AvisoPrazos:
+        with self._conectar() as conexao:
+            conexao.execute(
+                "INSERT OR REPLACE INTO avisos_prazos (chat_id, horario) VALUES (?, ?)",
+                (chat_id, horario.strftime("%H:%M")),
+            )
+        return AvisoPrazos(chat_id, horario)
+
+    def aviso_prazos(self, chat_id: int) -> AvisoPrazos | None:
+        with self._conectar() as conexao:
+            linha = conexao.execute(
+                "SELECT * FROM avisos_prazos WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        return self._aviso_prazos(linha) if linha else None
+
+    def todos_avisos_prazos(self) -> list[AvisoPrazos]:
+        with self._conectar() as conexao:
+            linhas = conexao.execute("SELECT * FROM avisos_prazos ORDER BY chat_id").fetchall()
+        return [self._aviso_prazos(linha) for linha in linhas]
+
+    def marcar_prazos_conferidos(self, chat_id: int, dia: date) -> None:
+        with self._conectar() as conexao:
+            conexao.execute(
+                "UPDATE avisos_prazos SET conferido_em = ? WHERE chat_id = ?",
+                (dia.isoformat(), chat_id),
+            )
+
+    def apagar_aviso_prazos(self, chat_id: int) -> bool:
+        with self._conectar() as conexao:
+            cursor = conexao.execute("DELETE FROM avisos_prazos WHERE chat_id = ?", (chat_id,))
         return cursor.rowcount > 0
 
     # ---------- Lista de compras e tarefas ----------
