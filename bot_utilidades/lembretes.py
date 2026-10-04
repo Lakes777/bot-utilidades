@@ -44,6 +44,8 @@ DIAS_DA_SEMANA = {
     "domingo": 6, "dom": 6,
 }
 NOMES_DOS_DIAS = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+DIAS_UTEIS = (0, 1, 2, 3, 4)
+FIM_DE_SEMANA = (5, 6)
 
 # Os lembretes ficam salvos no banco, então sobrevivem a reinicializações;
 # o limite só evita erros de digitação como "1000d".
@@ -62,6 +64,8 @@ USO = (
     "/lembrar 25/12 9:00 ligar pra vó\n"
     "/lembrar todo dia 8:00 tomar remédio\n"
     "/lembrar toda quinta 19:00 futebol\n"
+    "/lembrar toda seg e qua 7:00 academia\n"
+    "/lembrar dias úteis 7:00 acordar\n"
     "Tempos aceitos: 10m, 2h, 1h30m, 1d"
 )
 
@@ -81,7 +85,8 @@ class Pedido:
     quando: datetime
     texto: str
     diario: bool = False
-    semanal: bool = False  # repete toda semana no mesmo dia e horário
+    semanal: bool = False  # repete toda semana, nos dias de "dias", no mesmo horário
+    dias: tuple[int, ...] = ()  # dias da semana (segunda = 0), só nos semanais
     tempo: timedelta | None = None  # preenchido só em "daqui a X" ("10m", "2h"...)
 
 
@@ -181,9 +186,17 @@ def ler_dia_da_semana(palavra: str) -> int | None:
     return DIAS_DA_SEMANA.get(palavra)
 
 
-def toda_semana(dia: int) -> str:
-    """toda_semana(3) -> "toda quinta"; toda_semana(5) -> "todo sábado"."""
-    return ("todo " if dia >= 5 else "toda ") + NOMES_DOS_DIAS[dia]
+def toda_semana(dias: tuple[int, ...]) -> str:
+    """(3,) -> "toda quinta"; (0, 2) -> "toda segunda e quarta"; (5,) -> "todo sábado"."""
+    if dias == DIAS_UTEIS:
+        return "todo dia útil"
+    if dias == FIM_DE_SEMANA:
+        return "todo fim de semana"
+    if len(dias) == 7:
+        return "todo dia"
+    nomes = [NOMES_DOS_DIAS[dia] for dia in dias]
+    lista = nomes[0] if len(nomes) == 1 else ", ".join(nomes[:-1]) + " e " + nomes[-1]
+    return ("todo " if dias[0] >= 5 else "toda ") + lista
 
 
 def proxima_vez_no_dia(dia: int, horario: time, agora: datetime) -> datetime:
@@ -196,6 +209,79 @@ def proxima_vez_no_dia(dia: int, horario: time, agora: datetime) -> datetime:
     return momento
 
 
+def proxima_vez_nos_dias(dias: tuple[int, ...], horario: time, agora: datetime) -> datetime:
+    """A mais próxima entre as próximas vezes de cada dia."""
+    return min(proxima_vez_no_dia(dia, horario, agora) for dia in dias)
+
+
+def ler_dias(palavras: list[str]) -> tuple[tuple[int, ...], bool, list[str]] | None:
+    """Lê os dias da semana do começo do pedido.
+
+    Devolve (dias, repete, resto) ou None se o pedido não começa com dias da semana.
+    ["toda", "seg", "e", "qua", "7:00", ...] -> ((0, 2), True, ["7:00", ...])
+    ["dias", "úteis", "7:00", ...] -> ((0, 1, 2, 3, 4), True, ["7:00", ...])
+    ["quinta", "19:00", ...] -> ((3,), False, ["19:00", ...])  (só uma vez)
+    """
+    palavras = separar_virgulas(palavras)
+    palavra = [sem_acento(p).rstrip(",") for p in palavras]
+    i = 0
+    repete = bool(palavra) and palavra[0] in ("toda", "todo", "todas", "todos")
+    if repete:
+        i = 2 if palavra[1:2] in (["as"], ["os"]) else 1  # "todas as quintas"
+
+    if palavra[i : i + 2] in (["dia", "util"], ["dias", "uteis"]):
+        return DIAS_UTEIS, True, palavras[i + 2 :]
+    if palavra[i : i + 3] in (["fim", "de", "semana"], ["fins", "de", "semana"]):
+        return FIM_DE_SEMANA, True, palavras[i + 3 :]
+
+    if i >= len(palavra) or ler_dia_da_semana(palavra[i]) is None:
+        return None
+    dias = [ler_dia_da_semana(palavra[i])]
+    i += 1
+    while i < len(palavra):
+        if palavra[i] in ("feira", "feiras"):  # "quinta feira", sem hífen
+            i += 1
+            continue
+        seguinte = ler_dia_da_semana(palavra[i + 1]) if i + 1 < len(palavra) else None
+        if palavra[i] == "a" and seguinte is not None:  # "seg a sex"
+            # "seg a seg" dá a volta inteira: a semana toda.
+            tamanho = (seguinte - dias[-1]) % 7 or 7
+            dias += [(dias[-1] + n) % 7 for n in range(1, tamanho + 1)]
+            i += 2
+        elif palavra[i] == "e" and seguinte is not None:  # "seg e qua"
+            dias.append(seguinte)
+            i += 2
+        elif palavras[i - 1].endswith(",") and ler_dia_da_semana(palavra[i]) is not None:
+            dias.append(ler_dia_da_semana(palavra[i]))  # "seg, qua e sex"
+            i += 1
+        else:
+            break
+    return tuple(sorted(set(dias))), repete, palavras[i:]
+
+
+def separar_virgulas(palavras: list[str]) -> list[str]:
+    """["seg,qua", "7:00", "a,b"] -> ["seg,", "qua", "7:00", "a,b"].
+
+    Só separa palavras feitas de dias da semana, e só antes do horário,
+    para não mexer nas vírgulas do texto do lembrete.
+    """
+    resultado = []
+    for posicao, palavra in enumerate(palavras):
+        partes = palavra.split(",")
+        dias = [parte for parte in partes if parte]
+        if FORMATO_HORARIO.match(palavra) or len(partes) < 2 or not dias or any(
+            ler_dia_da_semana(parte) is None for parte in dias
+        ):
+            if FORMATO_HORARIO.match(palavra):
+                return resultado + palavras[posicao:]
+            resultado.append(palavra)
+            continue
+        for numero, parte in enumerate(partes):
+            if parte:
+                resultado.append(parte + ("," if numero < len(partes) - 1 else ""))
+    return resultado
+
+
 def interpretar(palavras: list[str], agora: datetime) -> Pedido:
     """["10m", "tomar", "água"] -> Pedido(quando=agora + 10 minutos, texto="tomar água").
 
@@ -203,13 +289,9 @@ def interpretar(palavras: list[str], agora: datetime) -> Pedido:
     horário opcional, também "25/12 às 9:00"), ["todo", "dia", "8:00", ...] (diário)
     e ["toda", "quinta", "19:00", ...] (semanal).
     """
-    if palavras and sem_acento(palavras[0]) in ("toda", "todo", "todas", "todos"):
-        resto = palavras[1:]
-        if resto and sem_acento(resto[0]) in ("as", "os"):  # "todas as quintas"
-            resto = resto[1:]
-        dia = ler_dia_da_semana(resto[0]) if resto else None
-        if dia is not None:
-            return interpretar_semanal(dia, resto[1:], agora)
+    lidos = ler_dias(palavras)
+    if lidos is not None:
+        return interpretar_semanal(*lidos, agora)
 
     diario = [p.lower() for p in palavras[:2]] == ["todo", "dia"]
     if diario:
@@ -249,16 +331,30 @@ def interpretar_data(palavras: list[str], agora: datetime) -> Pedido:
     return Pedido(ler_data(data, horario, agora), ler_texto(resto))
 
 
-def interpretar_semanal(dia: int, palavras: list[str], agora: datetime) -> Pedido:
-    """dia=3, ["19:00", "futebol"] ou ["feira", "às", "19:00", "futebol"]."""
-    if palavras and sem_acento(palavras[0]) in ("feira", "feiras"):  # "toda quinta feira", sem hífen
-        palavras = palavras[1:]
+def interpretar_semanal(
+    dias: tuple[int, ...], repete: bool, palavras: list[str], agora: datetime
+) -> Pedido:
+    """dias=(3,), ["19:00", "futebol"] ou ["às", "19:00", "futebol"]."""
     if palavras and sem_acento(palavras[0]) == "as":
         palavras = palavras[1:]
     if len(palavras) < 2:
         raise LembreteError(USO)
+    if not repete and len(dias) > 1:
+        # "seg e qua 7:00" sem "toda" é ambíguo: uma vez só ou toda semana?
+        raise LembreteError(
+            f'Para repetir toda semana, comece com "toda": /lembrar {toda_semana(dias)} ...'
+        )
+    if not FORMATO_HORARIO.match(palavras[0]):
+        exemplo = toda_semana(dias) if repete else NOMES_DOS_DIAS[dias[0]]
+        raise LembreteError(
+            f'Não entendi o horário "{palavras[0]}". Depois dos dias vem o horário, '
+            f"por exemplo: /lembrar {exemplo} 7:00 ..."
+        )
     horario = ler_horario(palavras[0])
-    return Pedido(proxima_vez_no_dia(dia, horario, agora), ler_texto(palavras[1:]), semanal=True)
+    quando = proxima_vez_nos_dias(dias, horario, agora)
+    if not repete:  # "quinta 19:00 dentista": só a próxima quinta
+        return Pedido(quando, ler_texto(palavras[1:]))
+    return Pedido(quando, ler_texto(palavras[1:]), semanal=True, dias=dias)
 
 
 def ler_texto(palavras: list[str]) -> str:
@@ -283,7 +379,7 @@ def confirmar(pedido: Pedido, agora: datetime) -> str:
         formato = "%d/%m" if quando.year == hoje.year else "%d/%m/%Y"
         primeiro = dia or f"em {quando:{formato}}"
         return (
-            f"✅ Combinado! {toda_semana(quando.weekday()).capitalize()} às {quando:%H:%M} "
+            f"✅ Combinado! {toda_semana(pedido.dias).capitalize()} às {quando:%H:%M} "
             f"eu te lembro: {pedido.texto}\nO primeiro é {primeiro}."
         )
     if pedido.diario:

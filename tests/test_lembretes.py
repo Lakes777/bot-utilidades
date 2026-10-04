@@ -299,10 +299,21 @@ def test_o_que_nao_e_dia_da_semana(palavra):
 
 
 @pytest.mark.parametrize(
-    ("dia", "esperado"), [(0, "toda segunda"), (3, "toda quinta"), (5, "todo sábado"), (6, "todo domingo")]
+    ("dias", "esperado"),
+    [
+        ((0,), "toda segunda"),
+        ((3,), "toda quinta"),
+        ((5,), "todo sábado"),
+        ((6,), "todo domingo"),
+        ((0, 2), "toda segunda e quarta"),
+        ((0, 2, 4), "toda segunda, quarta e sexta"),
+        ((5, 6), "todo fim de semana"),
+        ((0, 1, 2, 3, 4), "todo dia útil"),
+        (tuple(range(7)), "todo dia"),
+    ],
 )
-def test_toda_semana(dia, esperado):
-    assert toda_semana(dia) == esperado
+def test_toda_semana(dias, esperado):
+    assert toda_semana(dias) == esperado
 
 
 @pytest.mark.parametrize(
@@ -342,18 +353,18 @@ def test_proxima_vez_no_dia_usa_o_relogio_de_brasilia():
 )
 def test_interpreta_lembrete_semanal(inicio):
     assert interpretar([*inicio, "19:00", "futebol"], AGORA) == Pedido(
-        datetime(2026, 10, 1, 19, 0, tzinfo=FUSO), "futebol", semanal=True
+        datetime(2026, 10, 1, 19, 0, tzinfo=FUSO), "futebol", semanal=True, dias=(3,)
     )
 
 
 def test_todo_sabado():
     pedido = interpretar(["todo", "sábado", "9:30", "feira", "livre"], AGORA)
-    assert pedido == Pedido(datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), "feira livre", semanal=True)
+    assert pedido == Pedido(datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), "feira livre", semanal=True, dias=(5,))
 
 
 def test_todos_os_sabados():
     pedido = interpretar(["todos", "os", "sábados", "9:30", "feira"], AGORA)
-    assert pedido == Pedido(datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), "feira", semanal=True)
+    assert pedido == Pedido(datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), "feira", semanal=True, dias=(5,))
 
 
 def test_semanal_na_virada_do_ano_mostra_o_ano():
@@ -362,6 +373,93 @@ def test_semanal_na_virada_do_ano_mostra_o_ano():
     assert confirmar(pedido, agora) == (
         "✅ Combinado! Toda sexta às 18:00 eu te lembro: pizza\nO primeiro é em 01/01/2027."
     )
+
+
+@pytest.mark.parametrize(
+    ("palavras", "dias", "primeiro"),
+    [
+        (["toda", "seg", "e", "qua", "7:00"], (0, 2), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["toda", "segunda,", "quarta", "e", "sexta", "7:00"], (0, 2, 4), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["toda", "seg,", "qua,", "sex", "7:00"], (0, 2, 4), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["todas", "as", "terças", "e", "quintas", "às", "7:00"], (1, 3), datetime(2026, 9, 29, 7, 0, tzinfo=FUSO)),
+        (["toda", "quarta", "feira", "e", "sexta", "feira", "7:00"], (2, 4), datetime(2026, 9, 30, 7, 0, tzinfo=FUSO)),
+        (["toda", "seg", "a", "sex", "7:00"], (0, 1, 2, 3, 4), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["toda", "sex", "a", "seg", "7:00"], (0, 4, 5, 6), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["dias", "úteis", "7:00"], (0, 1, 2, 3, 4), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["todo", "dia", "útil", "7:00"], (0, 1, 2, 3, 4), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["todos", "os", "dias", "uteis", "7:00"], (0, 1, 2, 3, 4), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["fim", "de", "semana", "11:00"], (5, 6), datetime(2026, 9, 27, 11, 0, tzinfo=FUSO)),
+        (["todo", "fim", "de", "semana", "9:00"], (5, 6), datetime(2026, 10, 3, 9, 0, tzinfo=FUSO)),
+        (["toda", "qua", "e", "qua", "7:00"], (2,), datetime(2026, 9, 30, 7, 0, tzinfo=FUSO)),
+        (["toda", "seg", "a", "seg", "7:00"], tuple(range(7)), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["toda", "segunda,quarta", "7:00"], (0, 2), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+        (["toda", "seg,qua,", "sex", "7:00"], (0, 2, 4), datetime(2026, 9, 28, 7, 0, tzinfo=FUSO)),
+    ],
+)
+def test_varios_dias(palavras, dias, primeiro):
+    pedido = interpretar([*palavras, "academia"], AGORA)
+    assert pedido == Pedido(primeiro, "academia", semanal=True, dias=dias)
+
+
+def test_dia_sem_toda_e_so_uma_vez():
+    # "quinta 19:00 dentista": a próxima quinta, sem repetir.
+    assert interpretar(["quinta", "19:00", "dentista"], AGORA) == Pedido(
+        datetime(2026, 10, 1, 19, 0, tzinfo=FUSO), "dentista"
+    )
+
+
+def test_varios_dias_sem_toda_pede_o_toda():
+    with pytest.raises(LembreteError, match='comece com "toda": /lembrar toda segunda e quarta'):
+        interpretar(["seg", "e", "qua", "7:00", "academia"], AGORA)
+
+
+def test_texto_com_virgula_e_dia_da_semana_fica_inteiro():
+    pedido = interpretar(["toda", "sexta", "18:00", "pizza,", "sábado", "e", "domingo"], AGORA)
+    assert pedido.dias == (4,)
+    assert pedido.texto == "pizza, sábado e domingo"
+
+
+def test_virgula_sem_espaco_no_texto_fica_inteira():
+    pedido = interpretar(["toda", "sexta", "18:00", "pão,leite,sex"], AGORA)
+    assert pedido.texto == "pão,leite,sex"
+
+
+@pytest.mark.parametrize(
+    ("palavras", "exemplo"),
+    [
+        (["toda", "seg", "e", "7:00", "x"], "/lembrar toda segunda 7:00 ..."),
+        (["domingo", "pagar", "conta"], "/lembrar domingo 7:00 ..."),
+    ],
+)
+def test_sem_horario_depois_dos_dias_explica(palavras, exemplo):
+    with pytest.raises(LembreteError, match="Depois dos dias vem o horário") as erro:
+        interpretar(palavras, AGORA)
+    assert exemplo in str(erro.value)
+
+
+def test_e_seguido_de_algo_que_nao_e_dia_vira_horario_errado():
+    with pytest.raises(LembreteError, match="Não entendi o horário"):
+        interpretar(["toda", "seg", "e", "sempre", "7:00", "x"], AGORA)
+
+
+def test_todo_dia_continua_diario():
+    pedido = interpretar(["todo", "dia", "8:00", "remédio"], AGORA)
+    assert pedido.diario and not pedido.semanal
+
+
+@pytest.mark.parametrize(
+    ("palavras", "esperado"),
+    [
+        (["toda", "seg", "e", "qua", "7:00", "academia"],
+         "✅ Combinado! Toda segunda e quarta às 07:00 eu te lembro: academia\nO primeiro é amanhã."),
+        (["dias", "úteis", "7:00", "acordar"],
+         "✅ Combinado! Todo dia útil às 07:00 eu te lembro: acordar\nO primeiro é amanhã."),
+        (["quinta", "19:00", "dentista"],
+         "✅ Combinado! Em 01/10 às 19:00 eu te lembro: dentista"),
+    ],
+)
+def test_confirmacao_de_varios_dias(palavras, esperado):
+    assert confirmar(interpretar(palavras, AGORA), AGORA) == esperado
 
 
 def test_semanal_precisa_de_horario():

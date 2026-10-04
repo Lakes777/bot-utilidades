@@ -111,6 +111,39 @@ def test_lembrete_semanal(tmp_path):
     assert Banco(tmp_path / "lembretes.db").buscar(semanal.id).semanal is True
 
 
+def test_guarda_os_dias_da_semana(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    salvo = banco.adicionar(1, "academia", QUANDO, semanal=True, dias=(0, 2, 4))
+    assert Banco(tmp_path / "lembretes.db").buscar(salvo.id).dias == (0, 2, 4)
+    assert banco.adicionar(1, "avulso", QUANDO).dias == ()
+
+
+def test_semanal_sem_dias_usa_o_dia_da_data(tmp_path):
+    # Semanais criados antes da coluna "dias": QUANDO é um domingo em Brasília.
+    banco = Banco(tmp_path / "lembretes.db")
+    assert banco.adicionar(1, "feira", QUANDO, semanal=True).dias == (6,)
+
+
+def test_banco_do_servidor_com_semanal_e_sem_dias(tmp_path):
+    # Formato do banco da Oracle depois de 04/10: tem "semanal", ainda não tem "dias".
+    caminho = tmp_path / "lembretes.db"
+    with closing(sqlite3.connect(caminho)) as conexao, conexao:
+        conexao.execute(
+            "CREATE TABLE lembretes (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,"
+            " texto TEXT NOT NULL, quando TEXT NOT NULL,"
+            " diario INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1)),"
+            " semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1)))"
+        )
+        # Quinta 01/10/2026 às 19:00 em Brasília = 22:00 em UTC.
+        conexao.execute(
+            "INSERT INTO lembretes (chat_id, texto, quando, diario, semanal)"
+            " VALUES (42, 'futebol', '2026-10-01 22:00:00', 0, 1)"
+        )
+
+    [antigo] = Banco(caminho).todos()
+    assert antigo.semanal and antigo.dias == (3,)
+
+
 def test_acrescenta_a_coluna_semanal_num_banco_antigo(tmp_path):
     # Banco criado antes dos lembretes semanais, como o que já está no servidor.
     caminho = tmp_path / "lembretes.db"
@@ -128,6 +161,7 @@ def test_acrescenta_a_coluna_semanal_num_banco_antigo(tmp_path):
     banco = Banco(caminho)
     [antigo] = banco.todos()
     assert antigo.texto == "remédio" and antigo.diario and not antigo.semanal
+    assert antigo.dias == ()
     novo = banco.adicionar(42, "futebol", QUANDO, semanal=True)
     assert banco.buscar(novo.id).semanal
 

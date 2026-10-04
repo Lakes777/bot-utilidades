@@ -412,12 +412,38 @@ def test_semanal_nao_avanca_se_o_envio_falhar(banco):
     assert banco.buscar(lembrete.id) == lembrete
 
 
+def test_lembrar_dias_uteis_e_reagendar_pula_o_fim_de_semana(banco, monkeypatch):
+    _, respostas = simular_lembrar(["dias", "úteis", "7:00", "acordar"], banco)
+    [lembrete] = banco.todos()
+    assert lembrete.dias == (0, 1, 2, 3, 4)
+    assert respostas[0].startswith("✅ Combinado! Todo dia útil às 07:00")
+
+    # Sexta 02/10 às 7:00: o próximo é segunda 05/10, não sábado.
+    sexta = datetime(2026, 10, 2, 7, 0, tzinfo=FUSO)
+    banco.adiar(lembrete.id, sexta)
+    monkeypatch.setattr(bot, "agora", lambda: sexta)
+    [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id)
+    assert mensagem.endswith("(todo dia útil; para parar: /cancelar 1)")
+    assert banco.buscar(lembrete.id).quando == datetime(2026, 10, 5, 7, 0, tzinfo=FUSO)
+
+
+def test_semanal_de_varios_dias_vai_para_o_proximo_da_lista(banco, monkeypatch):
+    segunda = datetime(2026, 9, 28, 19, 0, tzinfo=FUSO)
+    lembrete = banco.adicionar(42, "academia", segunda, semanal=True, dias=(0, 2))
+    monkeypatch.setattr(bot, "agora", lambda: segunda)
+    simular_envio(banco, lembrete.id)
+    assert banco.buscar(lembrete.id).quando == datetime(2026, 9, 30, 19, 0, tzinfo=FUSO)
+
+
 def test_lista_mostra_os_semanais(banco):
     banco.adicionar(42, "futebol", datetime(2026, 10, 1, 19, 0, tzinfo=FUSO), semanal=True)
     banco.adicionar(42, "feira", datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), semanal=True)
     [resposta] = simular_comando(listar_lembretes, [], banco)
     assert "#1 toda quinta às 19:00: futebol" in resposta
     assert "#2 todo sábado às 09:30: feira" in resposta
+    banco.adicionar(42, "academia", datetime(2026, 9, 28, 7, 0, tzinfo=FUSO), semanal=True, dias=(0, 2))
+    [resposta] = simular_comando(listar_lembretes, [], banco)
+    assert "#3 toda segunda e quarta às 07:00: academia" in resposta
 
 
 def simular_botao(dados, banco, chat_id=42, texto="⏰ Lembrete: tomar água", erro_ao_editar=None):

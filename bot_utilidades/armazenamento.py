@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from bot_utilidades.lembretes import FUSO
+
 CAMINHO_PADRAO = Path("dados/lembretes.db")
 
 # Datas sempre em UTC e sempre no mesmo formato: assim a ordem alfabética
@@ -25,15 +27,18 @@ CREATE TABLE IF NOT EXISTS lembretes (
     texto   TEXT    NOT NULL,
     quando  TEXT    NOT NULL,  -- data e hora em UTC, no FORMATO_DATA (a próxima, se for diário)
     diario  INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1)),  -- 1 = repete todo dia
-    semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1))  -- 1 = repete toda semana
+    semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1)),  -- 1 = repete toda semana
+    dias    TEXT  -- dias da semana dos semanais, ex.: "0,2" (segunda = 0)
 )
 """
 
-# Bancos criados antes dos lembretes semanais não têm a coluna: ela é acrescentada
-# ao abrir, e os lembretes que já existiam ficam com semanal = 0.
-ACRESCENTAR_SEMANAL = (
-    "ALTER TABLE lembretes ADD COLUMN semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1))"
-)
+# Colunas que bancos mais antigos não têm: são acrescentadas ao abrir, e os
+# lembretes que já existiam ficam com o valor padrão.
+COLUNAS_NOVAS = {
+    "semanal": "ALTER TABLE lembretes ADD COLUMN semanal INTEGER NOT NULL DEFAULT 0"
+    " CHECK (semanal IN (0, 1))",
+    "dias": "ALTER TABLE lembretes ADD COLUMN dias TEXT",
+}
 
 
 CRIAR_TABELA_ALERTAS = """
@@ -85,7 +90,8 @@ class Lembrete:
     texto: str
     quando: datetime  # sempre com fuso (UTC)
     diario: bool = False
-    semanal: bool = False  # o dia da semana e o horário vêm do próprio "quando"
+    semanal: bool = False
+    dias: tuple[int, ...] = ()  # dias da semana dos semanais (segunda = 0)
 
 
 def para_texto(momento: datetime) -> str:
@@ -105,8 +111,9 @@ class Banco:
             conexao.execute(CRIAR_TABELA_ALERTAS)
             conexao.execute(CRIAR_TABELA_ENVIADOS)
             colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(lembretes)")}
-            if "semanal" not in colunas:
-                conexao.execute(ACRESCENTAR_SEMANAL)
+            for coluna, acrescentar in COLUNAS_NOVAS.items():
+                if coluna not in colunas:
+                    conexao.execute(acrescentar)
 
     @contextmanager
     def _conectar(self) -> Iterator[sqlite3.Connection]:
@@ -117,13 +124,19 @@ class Banco:
 
     @staticmethod
     def _lembrete(linha: sqlite3.Row) -> Lembrete:
+        quando = de_texto(linha["quando"])
+        dias = tuple(int(dia) for dia in linha["dias"].split(",")) if linha["dias"] else ()
+        if linha["semanal"] and not dias:
+            # Semanal de antes da coluna "dias": o dia vem da data do próximo envio.
+            dias = (quando.astimezone(FUSO).weekday(),)
         return Lembrete(
             linha["id"],
             linha["chat_id"],
             linha["texto"],
-            de_texto(linha["quando"]),
+            quando,
             bool(linha["diario"]),
             bool(linha["semanal"]),
+            dias,
         )
 
     def adicionar(
@@ -133,11 +146,20 @@ class Banco:
         quando: datetime,
         diario: bool = False,
         semanal: bool = False,
+        dias: tuple[int, ...] = (),
     ) -> Lembrete:
         with self._conectar() as conexao:
             cursor = conexao.execute(
-                "INSERT INTO lembretes (chat_id, texto, quando, diario, semanal) VALUES (?, ?, ?, ?, ?)",
-                (chat_id, texto, para_texto(quando), int(diario), int(semanal)),
+                "INSERT INTO lembretes (chat_id, texto, quando, diario, semanal, dias)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    chat_id,
+                    texto,
+                    para_texto(quando),
+                    int(diario),
+                    int(semanal),
+                    ",".join(str(dia) for dia in dias) or None,
+                ),
             )
         return self.buscar(cursor.lastrowid)
 
