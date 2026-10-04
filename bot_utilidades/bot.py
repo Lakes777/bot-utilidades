@@ -1,6 +1,7 @@
 """Monta o bot: liga cada comando do Telegram à função que responde."""
 
 import logging
+import re
 from datetime import datetime, time, timedelta
 
 import httpx
@@ -14,9 +15,10 @@ from telegram.ext import (
     ContextTypes,
     JobQueue,
     TypeHandler,
+    filters,
 )
 
-from bot_utilidades import alertas, clima, cotacoes, lembretes
+from bot_utilidades import alertas, clima, cotacoes, lembretes, listas
 from bot_utilidades.armazenamento import AvisoChuva, Banco, Lembrete
 
 log = logging.getLogger(__name__)
@@ -39,6 +41,10 @@ COMANDOS = [
     BotCommand("lembretes", "lista seus lembretes pendentes"),
     BotCommand("mudar", "muda o horário de um lembrete, ex.: /mudar 3 20:00"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
+    BotCommand("add", "põe na lista, ex.: /add pão, leite ou /add tarefas: estudar"),
+    BotCommand("lista", "mostra a lista de compras e tarefas"),
+    BotCommand("feito", "risca da lista, ex.: /feito 2"),
+    BotCommand("limpar", "esvazia uma lista, ex.: /limpar compras"),
     BotCommand("alerta", "avisa quando o preço chegar, ex.: /alerta bitcoin acima 400000"),
     BotCommand("alertas", "lista seus alertas de preço"),
     BotCommand("removeralerta", "apaga um alerta, ex.: /removeralerta 2"),
@@ -246,6 +252,73 @@ async def conferir_chuva(context: ContextTypes.DEFAULT_TYPE) -> None:
         log.warning("Chat %s inacessível; aviso de chuva apagado", aviso.chat_id)
         banco.apagar_aviso_chuva(aviso.chat_id)
         context.job.schedule_removal()
+
+
+async def adicionar_na_lista(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    banco: Banco = context.bot_data["banco"]
+    chat_id = update.effective_chat.id
+    # O texto inteiro depois do comando (que pode vir seguido de espaço ou de
+    # quebra de linha), sem juntar as linhas: cada linha pode ser um item.
+    partes = re.split(r"\s", update.message.text or "", maxsplit=1)
+    texto = partes[1] if len(partes) > 1 else ""
+    try:
+        lista, textos = listas.interpretar_add(texto)
+    except listas.ListaError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+    if banco.contar_itens(chat_id) + len(textos) > listas.LIMITE_POR_CHAT:
+        await update.message.reply_text(
+            f"⚠️ A lista aceita até {listas.LIMITE_POR_CHAT} itens. Risque alguns com /feito."
+        )
+        return
+    itens = banco.adicionar_itens(chat_id, lista, textos)
+    await update.message.reply_text(listas.confirmar_add(lista, itens))
+
+
+async def mostrar_lista(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lista = listas.nome_da_lista(" ".join(context.args)) or None
+    itens = context.bot_data["banco"].itens_do_chat(update.effective_chat.id, lista)
+    if not itens:
+        vazia = f"A lista de {lista} está vazia." if lista else "Sua lista está vazia."
+        await update.message.reply_text(f"{vazia}\n{listas.USO_ADD}")
+        return
+    for mensagem in listas.partir(listas.formatar(itens)):
+        await update.message.reply_text(mensagem)
+
+
+async def riscar_da_lista(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        numeros = listas.ler_numeros(context.args)
+    except listas.ListaError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+    riscados = context.bot_data["banco"].riscar_itens(update.effective_chat.id, numeros)
+    achados = {item.id for item in riscados}
+    linhas = []
+    if riscados:
+        linhas.append("✔️ Riscado: " + ", ".join(item.texto for item in riscados))
+    faltando = [f"#{numero}" for numero in numeros if numero not in achados]
+    if faltando:
+        linhas.append(f"⚠️ Não achei {', '.join(faltando)}. Veja os números em /lista")
+    await update.message.reply_text("\n".join(linhas))
+
+
+async def limpar_lista(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    nome = listas.nome_da_lista(" ".join(context.args))
+    if not nome:
+        await update.message.reply_text(listas.USO_LIMPAR)
+        return
+    banco: Banco = context.bot_data["banco"]
+    chat_id = update.effective_chat.id
+    if nome == "tudo":
+        total = banco.limpar_lista(chat_id)
+        await update.message.reply_text(f"🗑️ Todas as listas apagadas ({listas.quantos(total)}).")
+        return
+    total = banco.limpar_lista(chat_id, nome)
+    if total == 0:
+        await update.message.reply_text(f"⚠️ Não achei a lista de {nome}. Veja as suas em /lista")
+    else:
+        await update.message.reply_text(f"🗑️ Lista de {nome} apagada ({listas.quantos(total)}).")
 
 
 def agora() -> datetime:
@@ -719,6 +792,13 @@ def criar_app(
     app.add_handler(CommandHandler("cancelar", cancelar))
     app.add_handler(CommandHandler("mudar", mudar))
     app.add_handler(CallbackQueryHandler(responder_botao))
+    # Editar a mensagem do /add não deve acrescentar os itens de novo.
+    app.add_handler(
+        CommandHandler("add", adicionar_na_lista, filters=~filters.UpdateType.EDITED_MESSAGE)
+    )
+    app.add_handler(CommandHandler("lista", mostrar_lista))
+    app.add_handler(CommandHandler("feito", riscar_da_lista))
+    app.add_handler(CommandHandler("limpar", limpar_lista))
     app.add_handler(CommandHandler("alerta", criar_alerta))
     app.add_handler(CommandHandler("alertas", listar_alertas))
     app.add_handler(CommandHandler("removeralerta", remover_alerta))

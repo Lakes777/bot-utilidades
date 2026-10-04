@@ -27,6 +27,10 @@ from bot_utilidades.bot import (
     mudar,
     configurar_chuva,
     conferir_chuva,
+    adicionar_na_lista,
+    mostrar_lista,
+    riscar_da_lista,
+    limpar_lista,
 )
 from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -81,7 +85,7 @@ def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
         "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
-        "alerta", "alertas", "removeralerta", "mudar", "chuva",
+        "alerta", "alertas", "removeralerta", "mudar", "chuva", "add", "lista", "feito", "limpar",
     }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
@@ -1351,3 +1355,111 @@ def test_chuva_com_horario_sem_dois_pontos(banco, monkeypatch, horario):
     respostas, _ = simular_chuva(["Curitiba", horario], banco, monkeypatch)
     assert "dois-pontos" in respostas[0]
     assert banco.aviso_chuva(42) is None
+
+
+# ---------- Lista de compras e tarefas ----------
+
+def simular_lista(funcao, texto, banco, chat_id=42):
+    """Roda um comando da lista; texto é a mensagem inteira, como "/add pão, leite"."""
+    falso = Falso()
+    update = SimpleNamespace(
+        message=SimpleNamespace(text=texto, reply_text=falso.gravar("reply_text")),
+        effective_chat=SimpleNamespace(id=chat_id),
+    )
+    context = SimpleNamespace(args=texto.split()[1:], bot_data={"banco": banco})
+    asyncio.run(funcao(update, context))
+    return [args[0] for _, args, _ in falso.chamadas]
+
+
+def test_add_e_lista(banco):
+    assert simular_lista(adicionar_na_lista, "/add pão, leite", banco) == [
+        "📝 Na lista de compras: #1 pão, #2 leite"
+    ]
+    simular_lista(adicionar_na_lista, "/add tarefas: estudar\nlavar louça", banco)
+    [resposta] = simular_lista(mostrar_lista, "/lista", banco)
+    assert resposta == (
+        "Compras:\n#1 pão\n#2 leite\n\nTarefas:\n#3 estudar\n#4 lavar louça"
+        "\n\nQuando terminar: /feito número"
+    )
+    [so_tarefas] = simular_lista(mostrar_lista, "/lista Tarefas", banco)
+    assert "pão" not in so_tarefas and "#3 estudar" in so_tarefas
+
+
+@pytest.mark.parametrize(
+    "texto", ["/add\npão integral\nleite", "/add \npão integral\nleite", "/add\tpão integral\nleite"]
+)
+def test_add_com_um_item_por_linha(banco, texto):
+    simular_lista(adicionar_na_lista, texto, banco)
+    assert [i.texto for i in banco.itens_do_chat(42)] == ["pão integral", "leite"]
+
+
+def test_lista_grande_vai_em_varias_mensagens(banco):
+    banco.adicionar_itens(42, "compras", ["a" * 200] * 200)
+    respostas = simular_lista(mostrar_lista, "/lista", banco)
+    assert len(respostas) > 1 and all(len(r) <= 4096 for r in respostas)
+
+
+def test_feito_com_numero_gigante(banco):
+    [resposta] = simular_lista(riscar_da_lista, "/feito 99999999999999999999", banco)
+    assert resposta.startswith("⚠️ Use assim: /feito 2")
+
+
+def test_add_ignora_mensagem_editada(banco, respostas_do_bot, caplog):
+    app = criar_app(TOKEN_FALSO, banco)
+    nova = mensagem_de(42, "/add pão")
+    editada = {"update_id": 2, "edited_message": {**nova["message"], "edit_date": 1}}
+    processar(app, nova, editada)
+    assert [i.texto for i in banco.itens_do_chat(42)] == ["pão"]  # não entrou duas vezes
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_add_com_bot_no_nome_do_comando(banco):
+    # Em grupos o Telegram manda "/add@nome_do_bot pão".
+    simular_lista(adicionar_na_lista, "/add@sidekick_bot pão", banco)
+    assert [i.texto for i in banco.itens_do_chat(42)] == ["pão"]
+
+
+def test_add_vazio(banco):
+    [resposta] = simular_lista(adicionar_na_lista, "/add", banco)
+    assert resposta.startswith("⚠️ Use assim:")
+
+
+def test_add_respeita_o_limite(banco):
+    banco.adicionar_itens(42, "compras", [f"item {i}" for i in range(199)])
+    [resposta] = simular_lista(adicionar_na_lista, "/add a, b", banco)
+    assert resposta.startswith("⚠️ A lista aceita até 200 itens")
+    assert banco.contar_itens(42) == 199
+    simular_lista(adicionar_na_lista, "/add a", banco)
+    assert banco.contar_itens(42) == 200
+
+
+def test_lista_vazia(banco):
+    [resposta] = simular_lista(mostrar_lista, "/lista", banco)
+    assert resposta.startswith("Sua lista está vazia.")
+    [resposta] = simular_lista(mostrar_lista, "/lista tarefas", banco)
+    assert resposta.startswith("A lista de tarefas está vazia.")
+
+
+def test_feito_risca_e_avisa_os_que_nao_achou(banco):
+    banco.adicionar_itens(42, "compras", ["pão", "leite"])
+    banco.adicionar_itens(7, "compras", ["de outra pessoa"])
+    [resposta] = simular_lista(riscar_da_lista, "/feito 1 3 9", banco)
+    assert resposta == "✔️ Riscado: pão\n⚠️ Não achei #3, #9. Veja os números em /lista"
+    assert [i.texto for i in banco.itens_do_chat(42)] == ["leite"]
+    assert banco.contar_itens(7) == 1
+
+
+def test_feito_sem_numero(banco):
+    [resposta] = simular_lista(riscar_da_lista, "/feito pão", banco)
+    assert resposta.startswith("⚠️ Use assim: /feito 2")
+
+
+def test_limpar(banco):
+    banco.adicionar_itens(42, "compras", ["pão", "leite"])
+    banco.adicionar_itens(42, "tarefas", ["estudar"])
+    assert simular_lista(limpar_lista, "/limpar Compras", banco) == ["🗑️ Lista de compras apagada (2 itens)."]
+    assert simular_lista(limpar_lista, "/limpar compras", banco) == [
+        "⚠️ Não achei a lista de compras. Veja as suas em /lista"
+    ]
+    assert simular_lista(limpar_lista, "/limpar", banco)[0].startswith("Use assim:")
+    assert simular_lista(limpar_lista, "/limpar tudo", banco) == ["🗑️ Todas as listas apagadas (1 item)."]

@@ -28,6 +28,10 @@
 | `/lembretes` | Lista os lembretes pendentes, com número |
 | `/mudar 3 20:00` | Muda o horário do lembrete 3; se ele repete, continua repetindo. Também `/mudar 3 25/12 9:00`, `/mudar 3 toda sexta 18:00` |
 | `/cancelar 3` | Cancela o lembrete de número 3 (só os do próprio chat) |
+| `/add pão, leite, ovos` | Põe na lista de compras (vários itens separados por vírgula); `/add tarefas: estudar` usa uma lista com nome |
+| `/lista` | Mostra as listas com número (`/lista tarefas` mostra só uma) |
+| `/feito 2 5` | Risca os itens 2 e 5 |
+| `/limpar compras` | Esvazia uma lista (`/limpar tudo` apaga todas) |
 | `/alerta bitcoin acima 400000` | Avisa quando o preço chegar ao valor (também `dolar abaixo 5,20`); confere a cada 5 minutos e avisa uma vez só |
 | `/alertas` | Lista os alertas de preço, com número |
 | `/removeralerta 2` | Apaga o alerta de número 2 (só os do próprio chat) |
@@ -125,7 +129,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 483 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 535 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima e o aviso de chuva, a lista de compras, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -137,8 +141,9 @@ bot-utilidades/
 │   ├── bot.py           # comandos do Telegram, porteiro e agendamento dos lembretes
 │   ├── cotacoes.py      # Bitcoin e dólar (AwesomeAPI)
 │   ├── clima.py         # clima e chuva hora a hora (Open-Meteo)
+│   ├── listas.py        # interpreta "/add tarefas: estudar, ler" e monta a /lista
 │   ├── lembretes.py     # interpreta "1h30m", "18:30", "25/12 9:00", "todo dia 8:00" e "toda quinta 19:00"
-│   └── armazenamento.py # guarda lembretes, alertas e avisos de chuva em SQLite
+│   └── armazenamento.py # guarda lembretes, alertas, avisos de chuva e listas em SQLite
 ├── dados/             # banco dos lembretes (criado ao rodar, fora do Git)
 ├── tests/             # testes com pytest
 └── .env.exemplo       # modelo do .env, sem o token de verdade
@@ -182,7 +187,7 @@ bot-utilidades/
 - [x] Lembrete mensal (`todo dia 10 9:00 ...`)
 - [x] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)
 - [x] Aviso de chuva de manhã
-- [ ] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)
+- [x] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)
 - [ ] Conversor de moedas (`/converter 100 usd`)
 - [ ] Lançar gastos no Spendwise pelo Telegram (`/gasto 35 mercado`)
 - [ ] Avisar os prazos do Coursebook

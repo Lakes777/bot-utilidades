@@ -293,3 +293,22 @@ def test_marca_a_chuva_conferida(tmp_path):
     assert banco.aviso_chuva(42).conferido_em is None
     banco.marcar_chuva_conferida(42, date(2026, 10, 4))
     assert banco.aviso_chuva(42).conferido_em == date(2026, 10, 4)
+
+
+def test_itens_da_lista(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    pao, leite = banco.adicionar_itens(42, "compras", ["pão", "leite"])
+    [estudar] = banco.adicionar_itens(42, "tarefas", ["estudar"])
+    [alheio] = banco.adicionar_itens(7, "compras", ["de outra pessoa"])
+    [ovos] = banco.adicionar_itens(42, "compras", ["ovos"])
+
+    assert banco.itens_do_chat(42) == [pao, leite, estudar, ovos]  # ordem de entrada
+    assert banco.itens_do_chat(42, "tarefas") == [estudar]
+    assert banco.contar_itens(42) == 4
+
+    assert banco.riscar_itens(42, [leite.id, 99, alheio.id]) == [leite]
+    assert banco.contar_itens(7) == 1
+    assert banco.limpar_lista(42, "compras") == 2
+    assert banco.itens_do_chat(42) == [estudar]
+    assert banco.limpar_lista(42) == 1
+    assert banco.contar_itens(7) == 1

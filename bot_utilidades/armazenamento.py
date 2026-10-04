@@ -13,6 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from bot_utilidades.lembretes import FUSO
+from bot_utilidades.listas import Item
 
 CAMINHO_PADRAO = Path("dados/lembretes.db")
 
@@ -90,6 +91,16 @@ class AvisoChuva:
     conferido_em: date | None = None
 
 
+CRIAR_TABELA_ITENS = """
+CREATE TABLE IF NOT EXISTS itens (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    lista   TEXT    NOT NULL,  -- "compras", "tarefas"...
+    texto   TEXT    NOT NULL
+)
+"""
+
+
 # Os botões de um lembrete enviado funcionam por este tempo; depois o registro é apagado.
 VALIDADE_DOS_BOTOES = timedelta(days=7)
 
@@ -145,6 +156,7 @@ class Banco:
             conexao.execute(CRIAR_TABELA_ALERTAS)
             conexao.execute(CRIAR_TABELA_ENVIADOS)
             conexao.execute(CRIAR_TABELA_CHUVA)
+            conexao.execute(CRIAR_TABELA_ITENS)
             colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(lembretes)")}
             for coluna, acrescentar in COLUNAS_NOVAS.items():
                 if coluna not in colunas:
@@ -392,6 +404,65 @@ class Banco:
         with self._conectar() as conexao:
             cursor = conexao.execute("DELETE FROM avisos_chuva WHERE chat_id = ?", (chat_id,))
         return cursor.rowcount > 0
+
+    # ---------- Lista de compras e tarefas ----------
+
+    @staticmethod
+    def _item(linha: sqlite3.Row) -> Item:
+        return Item(linha["id"], linha["chat_id"], linha["lista"], linha["texto"])
+
+    def adicionar_itens(self, chat_id: int, lista: str, textos: list[str]) -> list[Item]:
+        with self._conectar() as conexao:
+            ids = [
+                conexao.execute(
+                    "INSERT INTO itens (chat_id, lista, texto) VALUES (?, ?, ?)",
+                    (chat_id, lista, texto),
+                ).lastrowid
+                for texto in textos
+            ]
+        return [Item(id, chat_id, lista, texto) for id, texto in zip(ids, textos)]
+
+    def itens_do_chat(self, chat_id: int, lista: str | None = None) -> list[Item]:
+        """Os itens do chat (ou de uma lista), na ordem em que entraram."""
+        sql = "SELECT * FROM itens WHERE chat_id = ?"
+        parametros: list = [chat_id]
+        if lista is not None:
+            sql += " AND lista = ?"
+            parametros.append(lista)
+        sql += " ORDER BY id"  # o agrupamento por lista é feito ao formatar
+        with self._conectar() as conexao:
+            linhas = conexao.execute(sql, parametros).fetchall()
+        return [self._item(linha) for linha in linhas]
+
+    def contar_itens(self, chat_id: int) -> int:
+        with self._conectar() as conexao:
+            [total] = conexao.execute(
+                "SELECT COUNT(*) FROM itens WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        return total
+
+    def riscar_itens(self, chat_id: int, ids: list[int]) -> list[Item]:
+        """Apaga os itens deste chat com esses números; devolve os que existiam."""
+        riscados = []
+        with self._conectar() as conexao:
+            for id in ids:
+                linha = conexao.execute(
+                    "SELECT * FROM itens WHERE id = ? AND chat_id = ?", (id, chat_id)
+                ).fetchone()
+                if linha:
+                    conexao.execute("DELETE FROM itens WHERE id = ?", (id,))
+                    riscados.append(self._item(linha))
+        return riscados
+
+    def limpar_lista(self, chat_id: int, lista: str | None = None) -> int:
+        """Apaga uma lista do chat (ou todas, com None); devolve quantos itens saíram."""
+        sql, parametros = "DELETE FROM itens WHERE chat_id = ?", [chat_id]
+        if lista is not None:
+            sql += " AND lista = ?"
+            parametros.append(lista)
+        with self._conectar() as conexao:
+            cursor = conexao.execute(sql, parametros)
+        return cursor.rowcount
 
     # ---------- Alertas de preço ----------
 

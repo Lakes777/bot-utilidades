@@ -499,7 +499,7 @@ def ler_numero(palavras: list[str], uso: str = USO_CANCELAR) -> int:
     if len(palavras) != 1:
         raise LembreteError(uso)
     numero = palavras[0].removeprefix("#")
-    if not numero.isdecimal():
+    if not numero.isdecimal() or len(numero) > 18:  # mais que isso não cabe no SQLite
         raise LembreteError(uso)
     return int(numero)
 
