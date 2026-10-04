@@ -4,6 +4,7 @@ from bot_utilidades.config import (
     ConfigError,
     carregar_chave_cotacoes,
     carregar_permitidos,
+    carregar_spendwise,
     carregar_token,
 )
 
@@ -15,6 +16,8 @@ def sem_token_no_ambiente(monkeypatch):
     """Garante que o token real do seu .env nunca entre nos testes."""
     monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)
     monkeypatch.delenv("AWESOMEAPI_TOKEN", raising=False)
+    monkeypatch.delenv("SPENDWISE_CHAVE", raising=False)
+    monkeypatch.delenv("SPENDWISE_URL", raising=False)
 
 
 def test_le_token_do_arquivo_env(tmp_path):
@@ -80,3 +83,51 @@ def test_le_a_chave_das_cotacoes(tmp_path):
     env = tmp_path / ".env"
     env.write_text("AWESOMEAPI_TOKEN= abc123 \n")
     assert carregar_chave_cotacoes(env) == "abc123"
+
+
+CHAVE_SPENDWISE = "sw_" + "b" * 40
+
+
+def test_spendwise_desligado_sem_chave(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("SPENDWISE_CHAVE=\n")
+    assert carregar_spendwise(env) is None
+
+
+def test_spendwise_com_url_padrao(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(f"SPENDWISE_CHAVE={CHAVE_SPENDWISE}\n")
+    assert carregar_spendwise(env) == ("https://controle-gastos-lakes777.vercel.app", CHAVE_SPENDWISE)
+
+
+def test_spendwise_url_local(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text(f"SPENDWISE_CHAVE={CHAVE_SPENDWISE}\nSPENDWISE_URL=http://localhost:8000/\n")
+    assert carregar_spendwise(env) == ("http://localhost:8000", CHAVE_SPENDWISE)
+
+
+@pytest.mark.parametrize("chave", ["cole-aqui", "sw_curta", "cb_" + "a" * 40, "sw_" + "á" * 40])
+def test_spendwise_chave_invalida(tmp_path, chave):
+    env = tmp_path / ".env"
+    env.write_text(f"SPENDWISE_CHAVE={chave}\n")
+    with pytest.raises(ConfigError, match="começa com sw_"):
+        carregar_spendwise(env)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://exemplo.com",
+        "http://localhost.qualquer.com",
+        "http://127.0.0.1.nip.io",
+        "ftp://exemplo.com",
+        "https://",
+        "https://exemplo.com/?x=1",
+        "https://exemplo.com/#a",
+    ],
+)
+def test_spendwise_recusa_url_insegura(tmp_path, url):
+    env = tmp_path / ".env"
+    env.write_text(f"SPENDWISE_CHAVE={CHAVE_SPENDWISE}\nSPENDWISE_URL={url}\n")
+    with pytest.raises(ConfigError, match="https://"):
+        carregar_spendwise(env)

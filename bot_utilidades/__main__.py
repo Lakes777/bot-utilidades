@@ -8,6 +8,7 @@ from bot_utilidades.config import (
     ConfigError,
     carregar_chave_cotacoes,
     carregar_permitidos,
+    carregar_spendwise,
     carregar_token,
 )
 
@@ -16,6 +17,7 @@ def main() -> None:
     try:
         token = carregar_token()
         permitidos = carregar_permitidos()
+        spendwise = carregar_spendwise()
     except ConfigError as erro:
         sys.exit(f"Erro: {erro}")
 
@@ -28,7 +30,9 @@ def main() -> None:
     chave_cotacoes = carregar_chave_cotacoes()
     if chave_cotacoes is None:
         print("Sem AWESOMEAPI_TOKEN: as cotações usam o limite sem cadastro da API.")
-    criar_app(token, Banco(), permitidos, chave_cotacoes).run_polling()
+    if spendwise is None:
+        print("Sem SPENDWISE_CHAVE: o /gasto fica desligado.")
+    criar_app(token, Banco(), permitidos, chave_cotacoes, spendwise).run_polling()
 
 
 if __name__ == "__main__":

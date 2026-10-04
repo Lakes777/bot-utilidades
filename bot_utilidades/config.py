@@ -3,6 +3,7 @@
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -66,3 +67,38 @@ def carregar_permitidos(arquivo_env: Path | None = None) -> frozenset[int] | Non
             )
         ids.add(int(parte))
     return frozenset(ids)
+
+
+# O endereço do Spendwise no ar; dá para trocar no .env (ex.: um servidor local).
+SPENDWISE_URL_PADRAO = "https://controle-gastos-lakes777.vercel.app"
+# Só ASCII: o \w do Python aceitaria "á", que o cabeçalho HTTP não consegue enviar.
+FORMATO_CHAVE_SPENDWISE = re.compile(r"^sw_[A-Za-z0-9_-]{20,}$")
+
+
+def carregar_spendwise(arquivo_env: Path | None = None) -> tuple[str, str] | None:
+    """Lê SPENDWISE_CHAVE (e SPENDWISE_URL, opcional) para o /gasto.
+
+    A chave é criada no site do Spendwise, na janela "Sua conta" > "Chaves de acesso".
+    Devolve (url, chave) ou None se a chave não foi configurada.
+    """
+    load_dotenv(arquivo_env)
+    chave = os.getenv("SPENDWISE_CHAVE", "").strip()
+    if not chave:
+        return None
+    if not FORMATO_CHAVE_SPENDWISE.match(chave):
+        raise ConfigError(
+            "SPENDWISE_CHAVE com formato inválido. Ela começa com sw_ e aparece uma vez só, "
+            'quando você cria a chave no Spendwise (Sua conta > Chaves de acesso).'
+        )
+    url = os.getenv("SPENDWISE_URL", "").strip().rstrip("/") or SPENDWISE_URL_PADRAO
+    partes = urlsplit(url)
+    # Sem criptografia, só o próprio computador (um Spendwise rodando localmente).
+    seguro = partes.scheme == "https" or (
+        partes.scheme == "http" and partes.hostname in ("localhost", "127.0.0.1")
+    )
+    if not seguro or not partes.hostname or partes.query or partes.fragment:
+        raise ConfigError(
+            "SPENDWISE_URL precisa ser um endereço https:// sem ? nem # "
+            "(a chave não pode ir sem criptografia)."
+        )
+    return url, chave

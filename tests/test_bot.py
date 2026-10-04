@@ -9,7 +9,7 @@ from telegram import Bot, CallbackQuery, Message, Update, User
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import CallbackQueryHandler, CommandHandler
 
-from bot_utilidades import bot, clima, cotacoes
+from bot_utilidades import bot, clima, cotacoes, spendwise
 from bot_utilidades.armazenamento import AvisoChuva, Banco
 from bot_utilidades.bot import (
     configurar_logs,
@@ -32,6 +32,7 @@ from bot_utilidades.bot import (
     riscar_da_lista,
     limpar_lista,
     converter_moedas,
+    lancar_gasto,
 )
 from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -86,7 +87,7 @@ def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
         "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
-        "alerta", "alertas", "removeralerta", "mudar", "chuva", "add", "lista", "feito", "limpar", "converter",
+        "alerta", "alertas", "removeralerta", "mudar", "chuva", "add", "lista", "feito", "limpar", "converter", "gasto",
     }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
@@ -1500,3 +1501,59 @@ def test_converter_sem_argumentos_nao_busca_nada(monkeypatch):
     respostas, pedidas = simular_converter([], monkeypatch)
     assert respostas[0].startswith("⚠️ Use assim:\n/converter 100 usd")
     assert pedidas == []
+
+
+# ---------- Gasto no Spendwise ----------
+
+CONFIG_SPENDWISE = ("https://spendwise.exemplo", "sw_" + "c" * 40)
+
+
+def simular_gasto(args, monkeypatch, configuracao=CONFIG_SPENDWISE, permitidos=frozenset({42}), erro=None):
+    enviados = []
+
+    async def lancar(gasto, url, chave, http):
+        enviados.append((gasto, url, chave))
+        if erro:
+            raise erro
+        return 7
+
+    monkeypatch.setattr(spendwise, "lancar", lancar)
+    falso = Falso()
+    update = SimpleNamespace(message=SimpleNamespace(reply_text=falso.gravar("reply_text")))
+    context = SimpleNamespace(
+        args=args,
+        bot_data={"http": None, "spendwise": configuracao, "permitidos": permitidos},
+    )
+    asyncio.run(lancar_gasto(update, context))
+    return [args[0] for _, args, _ in falso.chamadas], enviados
+
+
+def test_gasto_lanca_e_confirma(monkeypatch):
+    respostas, [(gasto, url, chave)] = simular_gasto(["35,90", "mercado", "pão"], monkeypatch)
+    assert (gasto.valor, gasto.categoria, gasto.data) == (Decimal("35.90"), "mercado", AGORA.date())
+    assert (url, chave) == CONFIG_SPENDWISE
+    assert respostas == ["💸 Lançado no Spendwise: R$ 35,90 em mercado (pão), hoje. (#7)"]
+
+
+def test_gasto_sem_configuracao(monkeypatch):
+    respostas, enviados = simular_gasto(["35", "mercado"], monkeypatch, configuracao=None)
+    assert respostas[0].startswith("O /gasto não está configurado")
+    assert enviados == []
+
+
+def test_gasto_com_bot_aberto_e_recusado(monkeypatch):
+    respostas, enviados = simular_gasto(["35", "mercado"], monkeypatch, permitidos=None)
+    assert "USUARIOS_PERMITIDOS" in respostas[0]
+    assert enviados == []
+
+
+def test_gasto_com_pedido_errado_nao_chama_a_api(monkeypatch):
+    respostas, enviados = simular_gasto(["35"], monkeypatch)
+    assert respostas[0].startswith("⚠️ Use assim:")
+    assert enviados == []
+
+
+def test_gasto_com_erro_da_api(monkeypatch):
+    erro = spendwise.SpendwiseError("Não consegui acessar o Spendwise. Tente mais tarde.")
+    respostas, _ = simular_gasto(["35", "mercado"], monkeypatch, erro=erro)
+    assert respostas == ["⚠️ Não consegui acessar o Spendwise. Tente mais tarde."]

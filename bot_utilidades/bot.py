@@ -18,7 +18,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot_utilidades import alertas, clima, conversor, cotacoes, lembretes, listas
+from bot_utilidades import alertas, clima, conversor, cotacoes, lembretes, listas, spendwise
 from bot_utilidades.armazenamento import AvisoChuva, Banco, Lembrete
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ COMANDOS = [
     BotCommand("lembretes", "lista seus lembretes pendentes"),
     BotCommand("mudar", "muda o horário de um lembrete, ex.: /mudar 3 20:00"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
+    BotCommand("gasto", "lança no Spendwise, ex.: /gasto 35 mercado pão"),
     BotCommand("add", "põe na lista, ex.: /add pão, leite ou /add tarefas: estudar"),
     BotCommand("lista", "mostra a lista de compras e tarefas"),
     BotCommand("feito", "risca da lista, ex.: /feito 2"),
@@ -266,6 +267,31 @@ async def conferir_chuva(context: ContextTypes.DEFAULT_TYPE) -> None:
         log.warning("Chat %s inacessível; aviso de chuva apagado", aviso.chat_id)
         banco.apagar_aviso_chuva(aviso.chat_id)
         context.job.schedule_removal()
+
+
+async def lancar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    configuracao = context.bot_data.get("spendwise")
+    if configuracao is None:
+        await update.message.reply_text(
+            "O /gasto não está configurado. Crie uma chave no Spendwise (Sua conta > "
+            "Chaves de acesso) e coloque no .env do bot: SPENDWISE_CHAVE=sw_..."
+        )
+        return
+    if context.bot_data.get("permitidos") is None:
+        # Com o bot aberto, qualquer pessoa lançaria gastos na conta do dono.
+        await update.message.reply_text(
+            "🔒 Por segurança, o /gasto só funciona com USUARIOS_PERMITIDOS preenchido no .env."
+        )
+        return
+    url, chave = configuracao
+    hoje = agora().date()
+    try:
+        gasto = spendwise.interpretar(context.args, hoje)
+        numero = await spendwise.lancar(gasto, url, chave, context.bot_data["http"])
+    except spendwise.SpendwiseError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+    await update.message.reply_text(spendwise.confirmar(gasto, numero, hoje))
 
 
 async def adicionar_na_lista(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -780,6 +806,7 @@ def criar_app(
     banco: Banco,
     permitidos: frozenset[int] | None = None,
     chave_cotacoes: str | None = None,
+    spendwise: tuple[str, str] | None = None,
 ) -> Application:
     app = (
         Application.builder()
@@ -791,6 +818,7 @@ def criar_app(
     app.bot_data["banco"] = banco
     app.bot_data["permitidos"] = permitidos
     app.bot_data["chave_cotacoes"] = chave_cotacoes
+    app.bot_data["spendwise"] = spendwise  # (url, chave) ou None
     # Os grupos rodam em ordem (-2, -1, 0...). /meuid vem antes do porteiro para
     # funcionar para qualquer pessoa; o porteiro vem antes de todos os comandos.
     app.add_handler(CommandHandler("meuid", meuid), group=-2)
@@ -807,6 +835,7 @@ def criar_app(
     app.add_handler(CommandHandler("cancelar", cancelar))
     app.add_handler(CommandHandler("mudar", mudar))
     app.add_handler(CallbackQueryHandler(responder_botao))
+    app.add_handler(CommandHandler("gasto", lancar_gasto, filters=~filters.UpdateType.EDITED_MESSAGE))
     # Editar a mensagem do /add não deve acrescentar os itens de novo.
     app.add_handler(
         CommandHandler("add", adicionar_na_lista, filters=~filters.UpdateType.EDITED_MESSAGE)
