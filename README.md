@@ -163,3 +163,5 @@ bot-utilidades/
 - [x] Lista de usuários permitidos no `.env`
 - [x] Alerta de preço: avisar quando o Bitcoin (ou o dólar) chegar a um valor
 - [x] Hospedar o bot num servidor para ficar online 24 horas (Oracle Cloud, systemd)
+- [ ] Lembretes numa data específica (`/lembrar 25/12 9:00 ...`)
+- [ ] Lembretes semanais num dia da semana e horário escolhidos (`/lembrar toda quinta 19:00 ...`)
