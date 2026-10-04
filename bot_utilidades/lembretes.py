@@ -31,6 +31,9 @@ PARECE_HORARIO = re.compile(r"^\d{1,2}h(\d{2})?$", re.IGNORECASE)
 # Horário usado quando a data vem sem horário: "/lembrar 25/12 aniversário".
 HORARIO_PADRAO = time(9, 0)
 
+# Horário do aviso de chuva quando o /chuva vem sem horário.
+HORARIO_CHUVA = time(7, 0)
+
 # Até onde uma data com ano pode ir; também só evita erros de digitação ("25/12/2226").
 ANOS_MAXIMOS = 5
 

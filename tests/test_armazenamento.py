@@ -1,9 +1,9 @@
 import sqlite3
 from contextlib import closing
 from decimal import Decimal
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
-from bot_utilidades.armazenamento import Banco
+from bot_utilidades.armazenamento import AvisoChuva, Banco
 from bot_utilidades.lembretes import FUSO
 
 QUANDO = datetime(2026, 9, 27, 14, 30, tzinfo=FUSO)
@@ -270,3 +270,26 @@ def test_alertas_salvos_listados_e_apagados(tmp_path):
     assert not banco.remover_alerta(a.id)
     # Reabrir o arquivo mantém o que sobrou (sobrevive a reinicializações).
     assert len(Banco(tmp_path / "lembretes.db").todos_alertas()) == 1
+
+
+def test_aviso_de_chuva_salvo_substituido_e_apagado(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    aviso = AvisoChuva(42, "Curitiba", "Paraná", "Brasil", -25.4, -49.3, time(7, 0))
+    banco.salvar_aviso_chuva(aviso)
+    assert Banco(tmp_path / "lembretes.db").aviso_chuva(42) == aviso
+
+    outro = AvisoChuva(42, "Recife", "Pernambuco", "Brasil", -8.0, -34.9, time(6, 30))
+    banco.salvar_aviso_chuva(outro)
+    assert banco.todos_avisos_chuva() == [outro]  # um por chat
+
+    assert banco.aviso_chuva(7) is None
+    assert banco.apagar_aviso_chuva(42) is True
+    assert banco.apagar_aviso_chuva(42) is False
+
+
+def test_marca_a_chuva_conferida(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    banco.salvar_aviso_chuva(AvisoChuva(42, "Curitiba", "Paraná", "Brasil", -25.4, -49.3, time(7, 0)))
+    assert banco.aviso_chuva(42).conferido_em is None
+    banco.marcar_chuva_conferida(42, date(2026, 10, 4))
+    assert banco.aviso_chuva(42).conferido_em == date(2026, 10, 4)

@@ -112,9 +112,13 @@ def ler_clima(cidade: Cidade, dados: dict) -> Clima:
         raise ClimaError("A API de clima respondeu num formato inesperado.") from erro
 
 
-async def buscar(nome: str, cliente: httpx.AsyncClient) -> Clima:
+async def buscar_cidade(nome: str, cliente: httpx.AsyncClient) -> Cidade:
     busca = await _get_json(cliente, URL_BUSCA, {"name": nome, "count": 1, "language": "pt"})
-    cidade = ler_cidade(busca, nome)
+    return ler_cidade(busca, nome)
+
+
+async def buscar(nome: str, cliente: httpx.AsyncClient) -> Clima:
+    cidade = await buscar_cidade(nome, cliente)
     previsao = await _get_json(cliente, URL_PREVISAO, {
         "latitude": cidade.latitude,
         "longitude": cidade.longitude,
@@ -149,3 +153,66 @@ def formatar(clima: Clima) -> str:
     if c.chance_chuva is not None:
         linhas.append(f"☔ Chance de chuva hoje: {c.chance_chuva}%")
     return "\n".join(linhas)
+
+
+# ---------- Aviso de chuva ----------
+
+# Chance (%) a partir da qual uma hora conta como "vai chover".
+CHANCE_MINIMA = 50
+
+
+def nome_completo(cidade: Cidade) -> str:
+    """"Curitiba, Paraná" (sem o país, que quase sempre é o Brasil)."""
+    return ", ".join(parte for parte in (cidade.nome, cidade.regiao) if parte)
+
+
+def ler_chuva_por_hora(dados: dict) -> list[tuple[int, int]]:
+    """A previsão do dia, hora a hora: [(0, 10), (1, 5), ..., (23, 80)] -> (hora, chance %)."""
+    try:
+        horas, chances = dados["hourly"]["time"], dados["hourly"]["precipitation_probability"]
+        return [
+            (int(momento[11:13]), chance)  # "2026-10-04T14:00" -> 14
+            for momento, chance in zip(horas, chances, strict=True)
+            if chance is not None
+        ]
+    except (KeyError, TypeError, ValueError) as erro:
+        raise ClimaError("A API de clima respondeu num formato inesperado.") from erro
+
+
+async def buscar_chuva(cidade: Cidade, cliente: httpx.AsyncClient) -> list[tuple[int, int]]:
+    """A chance de chuva de cada hora de hoje (horário de Brasília)."""
+    previsao = await _get_json(cliente, URL_PREVISAO, {
+        "latitude": cidade.latitude,
+        "longitude": cidade.longitude,
+        "hourly": "precipitation_probability",
+        # Horas no relógio de Brasília, o mesmo dos lembretes e do horário do aviso.
+        "timezone": "America/Sao_Paulo",
+        "forecast_days": 1,
+    })
+    return ler_chuva_por_hora(previsao)
+
+
+def faixas(horas: list[int]) -> str:
+    """[14, 15, 16, 20] -> "das 14h às 17h e às 20h" (horas seguidas viram uma faixa)."""
+    grupos: list[list[int]] = []
+    for hora in sorted(horas):
+        if grupos and hora == grupos[-1][-1] + 1:
+            grupos[-1].append(hora)
+        else:
+            grupos.append([hora])
+    partes = [
+        f"às {g[0]}h" if len(g) == 1 else f"das {g[0]}h às {(g[-1] + 1) % 24}h" for g in grupos
+    ]
+    return partes[0] if len(partes) == 1 else ", ".join(partes[:-1]) + " e " + partes[-1]
+
+
+def aviso_de_chuva(cidade: Cidade, chuva: list[tuple[int, int]], a_partir_de: int) -> str | None:
+    """A mensagem do aviso, ou None se não houver chuva provável daqui até o fim do dia."""
+    provaveis = [(hora, chance) for hora, chance in chuva if hora >= a_partir_de and chance >= CHANCE_MINIMA]
+    if not provaveis:
+        return None
+    maior = max(chance for _, chance in provaveis)
+    return (
+        f"☔ Vai chover hoje em {nome_completo(cidade)}: até {maior}% de chance, "
+        f"{faixas([hora for hora, _ in provaveis])}. Leve o guarda-chuva!"
+    )

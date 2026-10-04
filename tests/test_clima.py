@@ -6,7 +6,11 @@ import pytest
 from bot_utilidades.clima import (
     Cidade,
     ClimaError,
+    aviso_de_chuva,
     buscar,
+    buscar_chuva,
+    faixas,
+    ler_chuva_por_hora,
     formatar,
     graus,
     ler_cidade,
@@ -140,3 +144,74 @@ def test_sem_internet():
 
     with pytest.raises(ClimaError, match="Não consegui acessar"):
         buscar_com_api_falsa("Curitiba", responder)
+
+
+# ---------- Aviso de chuva ----------
+
+def previsao_por_hora(chances):
+    return {
+        "hourly": {
+            "time": [f"2026-10-04T{hora:02d}:00" for hora in range(len(chances))],
+            "precipitation_probability": chances,
+        }
+    }
+
+
+def test_le_a_chuva_hora_a_hora():
+    assert ler_chuva_por_hora(previsao_por_hora([10, 80, None])) == [(0, 10), (1, 80)]
+
+
+@pytest.mark.parametrize("dados", [{}, {"hourly": {}}, {"hourly": {"time": ["x"], "precipitation_probability": [1]}},
+                                   {"hourly": {"time": ["2026-10-04T01:00"], "precipitation_probability": []}}])
+def test_chuva_em_formato_inesperado(dados):
+    with pytest.raises(ClimaError, match="formato inesperado"):
+        ler_chuva_por_hora(dados)
+
+
+@pytest.mark.parametrize(
+    ("horas", "esperado"),
+    [
+        ([14], "às 14h"),
+        ([14, 15, 16], "das 14h às 17h"),
+        ([16, 14, 15, 20], "das 14h às 17h e às 20h"),
+        ([8, 12, 13, 22, 23], "às 8h, das 12h às 14h e das 22h às 0h"),
+    ],
+)
+def test_faixas_de_horas(horas, esperado):
+    assert faixas(horas) == esperado
+
+
+def test_aviso_de_chuva():
+    chuva = [(hora, 80 if hora in (14, 15) else 70 if hora == 20 else 10) for hora in range(24)]
+    assert aviso_de_chuva(CURITIBA, chuva, a_partir_de=7) == (
+        "☔ Vai chover hoje em Curitiba, Paraná: até 80% de chance, das 14h às 16h e às 20h. "
+        "Leve o guarda-chuva!"
+    )
+
+
+def test_sem_chuva_nao_tem_aviso():
+    assert aviso_de_chuva(CURITIBA, [(hora, 49) for hora in range(24)], a_partir_de=0) is None
+
+
+def test_chuva_que_ja_passou_nao_conta():
+    chuva = [(hora, 90 if hora == 5 else 0) for hora in range(24)]
+    assert aviso_de_chuva(CURITIBA, chuva, a_partir_de=7) is None
+    assert aviso_de_chuva(CURITIBA, chuva, a_partir_de=5) is not None
+
+
+def test_busca_a_chuva_no_horario_de_brasilia():
+    pedidos = []
+
+    def responder(request):
+        pedidos.append(request)
+        return httpx.Response(200, json=previsao_por_hora([0] * 23 + [60]))
+
+    async def rodar():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(responder)) as cliente:
+            return await buscar_chuva(CURITIBA, cliente)
+
+    chuva = asyncio.run(rodar())
+    assert chuva[-1] == (23, 60)
+    [pedido] = pedidos
+    assert pedido.url.params["timezone"] == "America/Sao_Paulo"
+    assert pedido.url.params["hourly"] == "precipitation_probability"

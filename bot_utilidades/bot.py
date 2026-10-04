@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 from bot_utilidades import alertas, clima, cotacoes, lembretes
-from bot_utilidades.armazenamento import Banco, Lembrete
+from bot_utilidades.armazenamento import AvisoChuva, Banco, Lembrete
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ COMANDOS = [
     BotCommand("bitcoin", "preço do Bitcoin em reais"),
     BotCommand("dolar", "cotação do dólar"),
     BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
+    BotCommand("chuva", "avisa de manhã se for chover, ex.: /chuva Curitiba 7:00"),
     BotCommand(
         "lembrar", "lembrete, ex.: /lembrar 10m, 18:30, 25/12 9:00, todo dia 8:00, toda seg e qua 19:00"
     ),
@@ -126,6 +127,125 @@ async def responder_clima(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except clima.ClimaError as erro:
         texto = f"⚠️ {erro}"
     await update.message.reply_text(texto)
+
+
+USO_CHUVA = (
+    "Use assim:\n"
+    "/chuva Curitiba 7:00 (todo dia às 7:00, aviso se for chover)\n"
+    "/chuva (mostra o aviso configurado)\n"
+    "/chuva parar"
+)
+
+# Se o bot estava parado (travado ou reiniciando) na hora do aviso, ainda confere
+# se voltar dentro deste prazo; depois disso, a manhã já passou e fica para amanhã.
+TOLERANCIA_CHUVA = timedelta(hours=2)
+
+
+def agendar_chuva(job_queue: JobQueue, aviso: AvisoChuva) -> None:
+    for job in job_queue.get_jobs_by_name(f"chuva-{aviso.chat_id}"):
+        job.schedule_removal()
+    job_queue.run_daily(
+        conferir_chuva,
+        time=aviso.horario.replace(tzinfo=lembretes.FUSO),
+        chat_id=aviso.chat_id,
+        data=aviso.chat_id,
+        name=f"chuva-{aviso.chat_id}",
+        job_kwargs={"misfire_grace_time": int(TOLERANCIA_CHUVA.total_seconds())},
+    )
+
+
+async def configurar_chuva(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    banco: Banco = context.bot_data["banco"]
+    chat_id = update.effective_chat.id
+    args = list(context.args)
+
+    if not args:
+        aviso = banco.aviso_chuva(chat_id)
+        if aviso is None:
+            await update.message.reply_text("Você não tem aviso de chuva.\n" + USO_CHUVA)
+        else:
+            cidade = clima.nome_completo(clima.Cidade(aviso.cidade, aviso.regiao, aviso.pais, 0, 0))
+            await update.message.reply_text(
+                f"☔ Todo dia às {aviso.horario:%H:%M} eu confiro a previsão de {cidade}.\n"
+                "Para desligar: /chuva parar"
+            )
+        return
+
+    if [palavra.lower() for palavra in args] == ["parar"]:
+        apagado = banco.apagar_aviso_chuva(chat_id)
+        for job in context.job_queue.get_jobs_by_name(f"chuva-{chat_id}"):
+            job.schedule_removal()
+        await update.message.reply_text(
+            "Aviso de chuva desligado." if apagado else "Você não tinha aviso de chuva."
+        )
+        return
+
+    # O horário é a última palavra (opcional, 7:00 se faltar); o resto é a cidade.
+    if lembretes.PARECE_HORARIO.match(args[-1]):
+        await update.message.reply_text(
+            f'⚠️ Escreva o horário com dois-pontos: 7:00 em vez de "{args[-1]}".'
+        )
+        return
+    horario = lembretes.HORARIO_CHUVA
+    if lembretes.FORMATO_HORARIO.match(args[-1]):
+        try:
+            horario = lembretes.ler_horario(args.pop())
+        except lembretes.LembreteError as erro:
+            await update.message.reply_text(f"⚠️ {erro}")
+            return
+    if not args:
+        await update.message.reply_text("⚠️ Diga a cidade.\n" + USO_CHUVA)
+        return
+
+    try:
+        cidade = await clima.buscar_cidade(" ".join(args), context.bot_data["http"])
+    except clima.ClimaError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+
+    aviso = AvisoChuva(
+        chat_id, cidade.nome, cidade.regiao, cidade.pais, cidade.latitude, cidade.longitude, horario
+    )
+    banco.salvar_aviso_chuva(aviso)
+    agendar_chuva(context.job_queue, aviso)
+    await update.message.reply_text(
+        f"☔ Combinado! Todo dia às {horario:%H:%M} eu confiro a previsão de "
+        f"{clima.nome_completo(cidade)} e aviso se for chover. Sem chuva, fico quieto.\n"
+        "Para desligar: /chuva parar"
+    )
+
+
+async def conferir_chuva(context: ContextTypes.DEFAULT_TYPE) -> None:
+    banco: Banco = context.bot_data["banco"]
+    aviso = banco.aviso_chuva(context.job.data)
+    if aviso is None:  # desligado enquanto esperava
+        return
+    permitidos = context.bot_data.get("permitidos")
+    if permitidos is not None and aviso.chat_id not in permitidos:
+        # O porteiro só barra mensagens que chegam; o que o agendador envia é conferido aqui.
+        log.info("Chat %s não é mais permitido; aviso de chuva apagado", aviso.chat_id)
+        banco.apagar_aviso_chuva(aviso.chat_id)
+        context.job.schedule_removal()
+        return
+    hora = agora()
+    banco.marcar_chuva_conferida(aviso.chat_id, hora.date())
+    cidade = clima.Cidade(aviso.cidade, aviso.regiao, aviso.pais, aviso.latitude, aviso.longitude)
+    try:
+        chuva = await clima.buscar_chuva(cidade, context.bot_data["http"])
+    except clima.ClimaError as erro:
+        # Melhor avisar que não deu do que ficar quieto e parecer que não vai chover.
+        mensagem = f"⚠️ Não consegui conferir a chuva de hoje em {clima.nome_completo(cidade)}: {erro}"
+    else:
+        mensagem = clima.aviso_de_chuva(cidade, chuva, a_partir_de=hora.hour)
+    if mensagem is None:
+        return
+    try:
+        await context.bot.send_message(aviso.chat_id, mensagem)
+    except (Forbidden, BadRequest):
+        # Bloqueou o bot, ou o chat não existe mais: não adianta tentar todo dia.
+        log.warning("Chat %s inacessível; aviso de chuva apagado", aviso.chat_id)
+        banco.apagar_aviso_chuva(aviso.chat_id)
+        context.job.schedule_removal()
 
 
 def agora() -> datetime:
@@ -536,9 +656,24 @@ async def preparar(app: Application) -> None:
     app.bot_data["http"] = httpx.AsyncClient()
     await app.bot.set_my_commands(COMANDOS)
     reagendar(app)
+    reagendar_chuva(app)
     app.job_queue.run_repeating(
         conferir_alertas, interval=alertas.INTERVALO, first=30, name="conferir-alertas"
     )
+
+
+def reagendar_chuva(app: Application) -> None:
+    """Agenda os avisos de chuva salvos e confere já os que o reinício fez perder hoje."""
+    hora = agora()
+    for aviso in app.bot_data["banco"].todos_avisos_chuva():
+        agendar_chuva(app.job_queue, aviso)
+        horario_de_hoje = datetime.combine(hora.date(), aviso.horario, tzinfo=lembretes.FUSO)
+        perdido = horario_de_hoje <= hora < horario_de_hoje + TOLERANCIA_CHUVA
+        if perdido and aviso.conferido_em != hora.date():
+            app.job_queue.run_once(
+                conferir_chuva, when=0, chat_id=aviso.chat_id, data=aviso.chat_id,
+                name=f"chuva-{aviso.chat_id}",
+            )
 
 
 def reagendar(app: Application) -> None:
@@ -578,6 +713,7 @@ def criar_app(
     app.add_handler(CommandHandler("bitcoin", responder_cotacao(cotacoes.BITCOIN)))
     app.add_handler(CommandHandler("dolar", responder_cotacao(cotacoes.DOLAR)))
     app.add_handler(CommandHandler("clima", responder_clima))
+    app.add_handler(CommandHandler("chuva", configurar_chuva))
     app.add_handler(CommandHandler("lembrar", lembrar))
     app.add_handler(CommandHandler("lembretes", listar_lembretes))
     app.add_handler(CommandHandler("cancelar", cancelar))

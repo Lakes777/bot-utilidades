@@ -2,7 +2,7 @@
 
 [![Testes](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml/badge.svg)](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml)
 
-**Sidekick · bot de utilidades** para o Telegram: responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade** e agenda **lembretes** que ficam salvos (numa data, todo dia ou toda semana). Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
+**Sidekick · bot de utilidades** para o Telegram: responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade**, **avisa de manhã se for chover** e agenda **lembretes** que ficam salvos (numa data, todo dia, em dias da semana ou todo mês), com botões para adiar. Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
 
 <p align="center">
   <img src="docs/demo.gif" alt="Demonstração do bot no Telegram" width="320">
@@ -15,6 +15,7 @@
 | `/bitcoin` | Preço do Bitcoin em reais, com variação, máxima e mínima do dia |
 | `/dolar` | Cotação do dólar em reais, com as mesmas informações |
 | `/clima Curitiba` | Temperatura, sensação térmica, umidade, vento, máxima/mínima e chance de chuva |
+| `/chuva Curitiba 7:00` | Todo dia às 7:00 confere a previsão hora a hora e avisa só se for chover (com 50% de chance ou mais), dizendo em que horas. `/chuva` mostra, `/chuva parar` desliga |
 | `/lembrar 1h30m reunião` | Lembrete depois do tempo pedido (`10m`, `2h`, `1h30m`, `1d`, até 365 dias) |
 | `/lembrar 18:30 ligar pra mãe` | Lembrete num horário fixo: hoje, ou amanhã se o horário já passou |
 | `/lembrar 25/12 20:30 ceia` | Lembrete numa data (`25/12`, `25/12/2027`, também `25/12 às 20:30`); sem horário, às 9:00 |
@@ -124,7 +125,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 446 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 483 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -135,9 +136,9 @@ bot-utilidades/
 │   ├── config.py        # lê e valida o token e os usuários permitidos
 │   ├── bot.py           # comandos do Telegram, porteiro e agendamento dos lembretes
 │   ├── cotacoes.py      # Bitcoin e dólar (AwesomeAPI)
-│   ├── clima.py         # clima (Open-Meteo)
+│   ├── clima.py         # clima e chuva hora a hora (Open-Meteo)
 │   ├── lembretes.py     # interpreta "1h30m", "18:30", "25/12 9:00", "todo dia 8:00" e "toda quinta 19:00"
-│   └── armazenamento.py # guarda os lembretes em SQLite
+│   └── armazenamento.py # guarda lembretes, alertas e avisos de chuva em SQLite
 ├── dados/             # banco dos lembretes (criado ao rodar, fora do Git)
 ├── tests/             # testes com pytest
 └── .env.exemplo       # modelo do .env, sem o token de verdade
@@ -154,6 +155,7 @@ bot-utilidades/
 - **Banco como fonte da verdade, `JobQueue` só como despertador:** cada lembrete é salvo no SQLite e o agendador guarda só o número dele. Na hora de enviar, o texto é lido do banco; um lembrete cancelado no meio do caminho simplesmente não é achado. O lembrete só é apagado **depois** que o Telegram confirma o envio: se a internet cair, ele continua salvo e sai quando o bot voltar. Datas ficam em UTC, sempre no mesmo formato de texto, para a ordem alfabética ser a cronológica.
 - **Lembrete atrasado não se perde:** por padrão, o agendador (APScheduler) descarta em silêncio um job que dispara com mais de 1 segundo de atraso, o que aconteceria com o PC hibernando ou com lembretes vencidos com o bot desligado. Confirmei isso com o agendador de verdade (um job 3 horas atrasado foi descartado) e desliguei o limite (`misfire_grace_time=None`).
 - **Diário conta a partir de agora:** depois de cada envio, o próximo é marcado para a próxima vez que o relógio chegar ao horário. Se o bot ficou 3 dias desligado, sai uma mensagem só, e não três.
+- **Aviso de chuva no horário de Brasília:** o `run_daily` da JobQueue recebe o horário com o fuso `America/Sao_Paulo`, então o aviso das 7:00 sai às 7:00 de Brasília mesmo que o servidor esteja em outro fuso (testado simulando a VM em Tóquio). A previsão também é pedida em horário de Brasília, para "a partir de agora" bater com o relógio do aviso. Se o bot reiniciar logo depois do horário (um deploy às 7:05), ele confere na hora, e a data da última conferência no banco evita aviso repetido. Sem chuva, o bot não manda nada; se a API falhar, avisa que não conseguiu conferir, para o silêncio não parecer "não vai chover".
 - **Botões que valem uma vez:** cada lembrete chega com os botões "Adiar 10 min", "Adiar 1 h" e "Feito". O texto do Telegram nos botões tem no máximo 64 bytes, então eles levam só um número; o texto do lembrete fica numa tabela `enviados` por 7 dias. O primeiro clique apaga o registro (filtrando pelo chat), então clicar duas vezes não cria dois lembretes. O limite de lembretes é conferido antes de gastar o botão.
 - **Banco antigo ganha a coluna nova sozinho:** os lembretes semanais precisaram de uma coluna `semanal`. Ao abrir, o bot confere as colunas da tabela (`PRAGMA table_info`) e, se faltar, acrescenta com `ALTER TABLE`, valendo 0 para os lembretes que já existiam. Assim o banco do servidor foi atualizado com um `git pull` e um reinício, sem perder nada. Depois, para os vários dias (`seg e qua`), veio a coluna `dias` com os números dos dias ("0,2"); os semanais criados antes dela continuam usando o dia da semana da data do próximo envio.
 - **"18:30" é horário, "18h" é duração:** só o formato com dois-pontos vira horário fixo, porque `/lembrar 18h ...` já queria dizer "daqui a 18 horas".
@@ -179,7 +181,7 @@ bot-utilidades/
 - [x] Lembretes em dias úteis e em vários dias (`seg e qua`)
 - [x] Lembrete mensal (`todo dia 10 9:00 ...`)
 - [x] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)
-- [ ] Aviso de chuva de manhã
+- [x] Aviso de chuva de manhã
 - [ ] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)
 - [ ] Conversor de moedas (`/converter 100 usd`)
 - [ ] Lançar gastos no Spendwise pelo Telegram (`/gasto 35 mercado`)

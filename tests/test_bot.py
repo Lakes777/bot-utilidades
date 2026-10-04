@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -9,8 +9,8 @@ from telegram import Bot, CallbackQuery, Message, Update, User
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import CallbackQueryHandler, CommandHandler
 
-from bot_utilidades import bot, cotacoes
-from bot_utilidades.armazenamento import Banco
+from bot_utilidades import bot, clima, cotacoes
+from bot_utilidades.armazenamento import AvisoChuva, Banco
 from bot_utilidades.bot import (
     configurar_logs,
     criar_app,
@@ -25,6 +25,8 @@ from bot_utilidades.bot import (
     remover_alerta,
     responder_botao,
     mudar,
+    configurar_chuva,
+    conferir_chuva,
 )
 from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -79,7 +81,7 @@ def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
         "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
-        "alerta", "alertas", "removeralerta", "mudar",
+        "alerta", "alertas", "removeralerta", "mudar", "chuva",
     }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
@@ -1121,3 +1123,231 @@ def test_preparar_agenda_a_conferencia_dos_alertas(banco, monkeypatch):
     [job] = app.job_queue.get_jobs_by_name("conferir-alertas")
     assert job.callback is conferir_alertas
     asyncio.run(app.bot_data["http"].aclose())
+
+
+# ---------- Aviso de chuva ----------
+
+CURITIBA = clima.Cidade("Curitiba", "Paraná", "Brasil", -25.4, -49.3)
+
+
+class JobQueueFalsa:
+    """Guarda os run_daily e as remoções, como a JobQueue faria."""
+
+    def __init__(self, nomes_existentes=()):
+        self.diarios = []
+        self.removidos = []
+        self.jobs = [
+            SimpleNamespace(name=nome, schedule_removal=lambda nome=nome: self.removidos.append(nome))
+            for nome in nomes_existentes
+        ]
+
+    def run_daily(self, callback, **kwargs):
+        self.diarios.append((callback, kwargs))
+
+    def get_jobs_by_name(self, nome):
+        return [job for job in self.jobs if job.name == nome]
+
+
+def simular_chuva(args, banco, monkeypatch, cidade=CURITIBA, erro=None, jobs=(), buscadas=None):
+    async def buscar_cidade(nome, http):
+        if buscadas is not None:
+            buscadas.append(nome)
+        if erro:
+            raise erro
+        return cidade
+
+    monkeypatch.setattr(clima, "buscar_cidade", buscar_cidade)
+    falso = Falso()
+    fila = JobQueueFalsa(jobs)
+    update = SimpleNamespace(
+        message=SimpleNamespace(reply_text=falso.gravar("reply_text")),
+        effective_chat=SimpleNamespace(id=42),
+    )
+    context = SimpleNamespace(args=args, bot_data={"banco": banco, "http": None}, job_queue=fila)
+    asyncio.run(configurar_chuva(update, context))
+    return [args[0] for _, args, _ in falso.chamadas], fila
+
+
+def test_chuva_configura_e_agenda(banco, monkeypatch):
+    respostas, fila = simular_chuva(["Curitiba", "6:30"], banco, monkeypatch)
+
+    aviso = banco.aviso_chuva(42)
+    assert (aviso.cidade, aviso.horario) == ("Curitiba", datetime(2026, 1, 1, 6, 30).time())
+    [(callback, kwargs)] = fila.diarios
+    assert callback is conferir_chuva
+    assert kwargs["time"].hour == 6 and kwargs["time"].minute == 30
+    assert kwargs["time"].tzinfo == FUSO
+    assert kwargs["name"] == "chuva-42" and kwargs["data"] == 42
+    assert respostas == [
+        "☔ Combinado! Todo dia às 06:30 eu confiro a previsão de Curitiba, Paraná "
+        "e aviso se for chover. Sem chuva, fico quieto.\nPara desligar: /chuva parar"
+    ]
+
+
+def test_chuva_sem_horario_usa_7h_e_cidade_com_espacos(banco, monkeypatch):
+    buscadas = []
+    simular_chuva(["São", "José", "dos", "Pinhais"], banco, monkeypatch, buscadas=buscadas)
+    assert buscadas == ["São José dos Pinhais"]
+    assert banco.aviso_chuva(42).horario.hour == 7
+
+
+def test_chuva_configurar_de_novo_troca_o_agendamento(banco, monkeypatch):
+    _, fila = simular_chuva(["Curitiba", "8:00"], banco, monkeypatch, jobs=["chuva-42"])
+    assert fila.removidos == ["chuva-42"]
+    assert len(fila.diarios) == 1
+
+
+def test_chuva_cidade_inexistente(banco, monkeypatch):
+    erro = clima.ClimaError('Não encontrei a cidade "Xyz". Confira o nome.')
+    respostas, fila = simular_chuva(["Xyz"], banco, monkeypatch, erro=erro)
+    assert respostas == ['⚠️ Não encontrei a cidade "Xyz". Confira o nome.']
+    assert banco.aviso_chuva(42) is None and fila.diarios == []
+
+
+@pytest.mark.parametrize(("args", "erro"), [(["Curitiba", "25:00"], "não existe"), (["7:00"], "Diga a cidade")])
+def test_chuva_com_pedido_errado(banco, monkeypatch, args, erro):
+    respostas, _ = simular_chuva(args, banco, monkeypatch)
+    assert erro in respostas[0]
+    assert banco.aviso_chuva(42) is None
+
+
+def test_chuva_sem_argumentos_mostra_o_aviso_ou_como_usar(banco, monkeypatch):
+    respostas, _ = simular_chuva([], banco, monkeypatch)
+    assert respostas[0].startswith("Você não tem aviso de chuva.\nUse assim:")
+    simular_chuva(["Curitiba", "7:00"], banco, monkeypatch)
+    respostas, _ = simular_chuva([], banco, monkeypatch)
+    assert respostas == ["☔ Todo dia às 07:00 eu confiro a previsão de Curitiba, Paraná.\nPara desligar: /chuva parar"]
+
+
+def test_chuva_parar(banco, monkeypatch):
+    simular_chuva(["Curitiba"], banco, monkeypatch)
+    respostas, fila = simular_chuva(["Parar"], banco, monkeypatch, jobs=["chuva-42"])
+    assert respostas == ["Aviso de chuva desligado."]
+    assert banco.aviso_chuva(42) is None and fila.removidos == ["chuva-42"]
+    respostas, _ = simular_chuva(["parar"], banco, monkeypatch)
+    assert respostas == ["Você não tinha aviso de chuva."]
+
+
+def rodar_conferencia(banco, monkeypatch, chuva=None, erro=None, erro_no_envio=None, permitidos=None):
+    async def buscar_chuva(cidade, http):
+        if erro:
+            raise erro
+        return chuva
+
+    monkeypatch.setattr(clima, "buscar_chuva", buscar_chuva)
+    falso = Falso()
+    enviar = falso.gravar("send_message")
+    removidos = []
+
+    async def send_message(*args, **kwargs):
+        await enviar(*args, **kwargs)
+        if erro_no_envio:
+            raise erro_no_envio
+
+    context = SimpleNamespace(
+        job=SimpleNamespace(data=42, schedule_removal=lambda: removidos.append(True)),
+        bot=SimpleNamespace(send_message=send_message),
+        bot_data={"banco": banco, "http": None, "permitidos": permitidos},
+    )
+    asyncio.run(conferir_chuva(context))
+    return [args for _, args, _ in falso.chamadas], removidos
+
+
+def salvar_curitiba(banco):
+    banco.salvar_aviso_chuva(AvisoChuva(42, "Curitiba", "Paraná", "Brasil", -25.4, -49.3, AGORA.time()))
+
+
+def test_conferir_chuva_avisa_quando_vai_chover(banco, monkeypatch):
+    salvar_curitiba(banco)
+    chuva = [(hora, 85 if hora in (15, 16) else 0) for hora in range(24)]
+    [(chat, mensagem)], _ = rodar_conferencia(banco, monkeypatch, chuva=chuva)
+    assert chat == 42
+    assert mensagem.startswith("☔ Vai chover hoje em Curitiba, Paraná: até 85% de chance, das 15h às 17h")
+
+
+def test_conferir_chuva_fica_quieto_sem_chuva(banco, monkeypatch):
+    salvar_curitiba(banco)
+    # Choveu às 8h, mas agora são 10h: não interessa mais.
+    chuva = [(hora, 90 if hora == 8 else 10) for hora in range(24)]
+    envios, _ = rodar_conferencia(banco, monkeypatch, chuva=chuva)
+    assert envios == []
+
+
+def test_conferir_chuva_avisa_quando_a_api_falha(banco, monkeypatch):
+    salvar_curitiba(banco)
+    envios, _ = rodar_conferencia(banco, monkeypatch, erro=clima.ClimaError("A API de clima está fora do ar."))
+    [(_, mensagem)] = envios
+    assert mensagem.startswith("⚠️ Não consegui conferir a chuva de hoje em Curitiba, Paraná")
+
+
+def test_conferir_chuva_desligado_nao_faz_nada(banco, monkeypatch):
+    envios, _ = rodar_conferencia(banco, monkeypatch, chuva=[(23, 99)])
+    assert envios == []
+
+
+def test_conferir_chuva_de_quem_bloqueou_o_bot(banco, monkeypatch):
+    salvar_curitiba(banco)
+    _, removidos = rodar_conferencia(banco, monkeypatch, chuva=[(23, 99)], erro_no_envio=Forbidden("blocked"))
+    assert banco.aviso_chuva(42) is None and removidos == [True]
+
+
+def jobs_de_chuva_ao_iniciar(banco, monkeypatch, horario, conferido_em=None):
+    banco.salvar_aviso_chuva(
+        AvisoChuva(42, "Curitiba", "Paraná", "Brasil", -25.4, -49.3, horario, conferido_em)
+    )
+    app = criar_app(TOKEN_FALSO, banco)
+    monkeypatch.setattr(type(app.bot), "set_my_commands", lambda self, comandos: asyncio.sleep(0))
+    asyncio.run(bot.preparar(app))
+    asyncio.run(app.bot_data["http"].aclose())
+    return app.job_queue.get_jobs_by_name("chuva-42")
+
+
+def test_preparar_agenda_os_avisos_de_chuva_no_fuso_de_brasilia(banco, monkeypatch):
+    [job] = jobs_de_chuva_ao_iniciar(banco, monkeypatch, time(7, 0))  # agora são 10:00
+    assert job.callback is conferir_chuva
+    assert str(job.job.trigger.timezone) == "America/Sao_Paulo"
+    assert job.job.misfire_grace_time == 7200
+
+
+def test_reinicio_logo_depois_do_horario_confere_na_hora(banco, monkeypatch):
+    # Aviso às 9:00 e o bot voltou às 10:00 sem ter conferido hoje: confere já.
+    jobs = jobs_de_chuva_ao_iniciar(banco, monkeypatch, time(9, 0))
+    assert len(jobs) == 2  # o diário e o de agora
+
+
+def test_reinicio_nao_confere_duas_vezes_no_dia(banco, monkeypatch):
+    jobs = jobs_de_chuva_ao_iniciar(banco, monkeypatch, time(9, 0), conferido_em=AGORA.date())
+    assert len(jobs) == 1
+
+
+def test_reinicio_muito_depois_do_horario_fica_para_amanha(banco, monkeypatch):
+    jobs = jobs_de_chuva_ao_iniciar(banco, monkeypatch, time(7, 59))  # passou de 2 h
+    assert len(jobs) == 1
+
+
+def test_conferir_chuva_marca_o_dia(banco, monkeypatch):
+    salvar_curitiba(banco)
+    rodar_conferencia(banco, monkeypatch, chuva=[(23, 0)])
+    assert banco.aviso_chuva(42).conferido_em == AGORA.date()
+
+
+def test_conferir_chuva_de_quem_saiu_dos_permitidos(banco, monkeypatch):
+    salvar_curitiba(banco)
+    envios, removidos = rodar_conferencia(banco, monkeypatch, chuva=[(23, 99)], permitidos=frozenset({7}))
+    assert envios == [] and removidos == [True]
+    assert banco.aviso_chuva(42) is None
+
+
+def test_conferir_chuva_de_chat_que_nao_existe_mais(banco, monkeypatch):
+    salvar_curitiba(banco)
+    _, removidos = rodar_conferencia(
+        banco, monkeypatch, chuva=[(23, 99)], erro_no_envio=BadRequest("Chat not found")
+    )
+    assert banco.aviso_chuva(42) is None and removidos == [True]
+
+
+@pytest.mark.parametrize("horario", ["7h", "6h30"])
+def test_chuva_com_horario_sem_dois_pontos(banco, monkeypatch, horario):
+    respostas, _ = simular_chuva(["Curitiba", horario], banco, monkeypatch)
+    assert "dois-pontos" in respostas[0]
+    assert banco.aviso_chuva(42) is None

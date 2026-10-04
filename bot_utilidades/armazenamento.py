@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -64,6 +64,32 @@ CREATE TABLE IF NOT EXISTS enviados (
 )
 """
 
+CRIAR_TABELA_CHUVA = """
+CREATE TABLE IF NOT EXISTS avisos_chuva (
+    chat_id   INTEGER PRIMARY KEY,  -- um aviso por chat; configurar de novo substitui
+    cidade    TEXT    NOT NULL,
+    regiao    TEXT    NOT NULL,
+    pais      TEXT    NOT NULL,
+    latitude  REAL    NOT NULL,
+    longitude REAL    NOT NULL,
+    horario   TEXT    NOT NULL,  -- "07:00", horário de Brasília
+    conferido_em TEXT  -- última data (Brasília) em que a previsão foi conferida, "2026-10-04"
+)
+"""
+
+
+@dataclass(frozen=True)
+class AvisoChuva:
+    chat_id: int
+    cidade: str
+    regiao: str
+    pais: str
+    latitude: float
+    longitude: float
+    horario: time
+    conferido_em: date | None = None
+
+
 # Os botões de um lembrete enviado funcionam por este tempo; depois o registro é apagado.
 VALIDADE_DOS_BOTOES = timedelta(days=7)
 
@@ -118,6 +144,7 @@ class Banco:
             conexao.execute(CRIAR_TABELA)
             conexao.execute(CRIAR_TABELA_ALERTAS)
             conexao.execute(CRIAR_TABELA_ENVIADOS)
+            conexao.execute(CRIAR_TABELA_CHUVA)
             colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(lembretes)")}
             for coluna, acrescentar in COLUNAS_NOVAS.items():
                 if coluna not in colunas:
@@ -307,6 +334,64 @@ class Banco:
         """Apaga o registro sem conferir o chat (usado quando o envio falha)."""
         with self._conectar() as conexao:
             conexao.execute("DELETE FROM enviados WHERE id = ?", (id,))
+
+    # ---------- Aviso de chuva ----------
+
+    @staticmethod
+    def _aviso_chuva(linha: sqlite3.Row) -> AvisoChuva:
+        return AvisoChuva(
+            linha["chat_id"],
+            linha["cidade"],
+            linha["regiao"],
+            linha["pais"],
+            linha["latitude"],
+            linha["longitude"],
+            time.fromisoformat(linha["horario"]),
+            date.fromisoformat(linha["conferido_em"]) if linha["conferido_em"] else None,
+        )
+
+    def salvar_aviso_chuva(self, aviso: AvisoChuva) -> None:
+        """Cria ou substitui o aviso de chuva do chat."""
+        with self._conectar() as conexao:
+            conexao.execute(
+                "INSERT OR REPLACE INTO avisos_chuva"
+                " (chat_id, cidade, regiao, pais, latitude, longitude, horario, conferido_em)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    aviso.chat_id,
+                    aviso.cidade,
+                    aviso.regiao,
+                    aviso.pais,
+                    aviso.latitude,
+                    aviso.longitude,
+                    aviso.horario.strftime("%H:%M"),
+                    aviso.conferido_em.isoformat() if aviso.conferido_em else None,
+                ),
+            )
+
+    def aviso_chuva(self, chat_id: int) -> AvisoChuva | None:
+        with self._conectar() as conexao:
+            linha = conexao.execute(
+                "SELECT * FROM avisos_chuva WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        return self._aviso_chuva(linha) if linha else None
+
+    def todos_avisos_chuva(self) -> list[AvisoChuva]:
+        with self._conectar() as conexao:
+            linhas = conexao.execute("SELECT * FROM avisos_chuva ORDER BY chat_id").fetchall()
+        return [self._aviso_chuva(linha) for linha in linhas]
+
+    def marcar_chuva_conferida(self, chat_id: int, dia: date) -> None:
+        with self._conectar() as conexao:
+            conexao.execute(
+                "UPDATE avisos_chuva SET conferido_em = ? WHERE chat_id = ?",
+                (dia.isoformat(), chat_id),
+            )
+
+    def apagar_aviso_chuva(self, chat_id: int) -> bool:
+        with self._conectar() as conexao:
+            cursor = conexao.execute("DELETE FROM avisos_chuva WHERE chat_id = ?", (chat_id,))
+        return cursor.rowcount > 0
 
     # ---------- Alertas de preço ----------
 
