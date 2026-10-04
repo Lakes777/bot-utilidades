@@ -2,7 +2,7 @@
 
 [![Testes](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml/badge.svg)](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml)
 
-**Sidekick · bot de utilidades** para o Telegram: responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade** e agenda **lembretes** que ficam salvos (inclusive diários). Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
+**Sidekick · bot de utilidades** para o Telegram: responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade** e agenda **lembretes** que ficam salvos (numa data, todo dia ou toda semana). Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
 
 <p align="center">
   <img src="docs/demo.gif" alt="Demonstração do bot no Telegram" width="320">
@@ -19,6 +19,7 @@
 | `/lembrar 18:30 ligar pra mãe` | Lembrete num horário fixo: hoje, ou amanhã se o horário já passou |
 | `/lembrar 25/12 20:30 ceia` | Lembrete numa data (`25/12`, `25/12/2027`, também `25/12 às 20:30`); sem horário, às 9:00 |
 | `/lembrar todo dia 8:00 remédio` | Lembrete repetido todo dia no mesmo horário |
+| `/lembrar toda quinta 19:00 futebol` | Lembrete repetido toda semana no mesmo dia e horário (`toda segunda`, `todos os sábados`, `quinta-feira`, `qui`...); o horário é obrigatório |
 | `/lembretes` | Lista os lembretes pendentes, com número |
 | `/cancelar 3` | Cancela o lembrete de número 3 (só os do próprio chat) |
 | `/alerta bitcoin acima 400000` | Avisa quando o preço chegar ao valor (também `dolar abaixo 5,20`); confere a cada 5 minutos e avisa uma vez só |
@@ -117,7 +118,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 251 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 316 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -129,7 +130,7 @@ bot-utilidades/
 │   ├── bot.py           # comandos do Telegram, porteiro e agendamento dos lembretes
 │   ├── cotacoes.py      # Bitcoin e dólar (AwesomeAPI)
 │   ├── clima.py         # clima (Open-Meteo)
-│   ├── lembretes.py     # interpreta "1h30m", "18:30", "25/12 9:00" e "todo dia 8:00"
+│   ├── lembretes.py     # interpreta "1h30m", "18:30", "25/12 9:00", "todo dia 8:00" e "toda quinta 19:00"
 │   └── armazenamento.py # guarda os lembretes em SQLite
 ├── dados/             # banco dos lembretes (criado ao rodar, fora do Git)
 ├── tests/             # testes com pytest
@@ -147,6 +148,7 @@ bot-utilidades/
 - **Banco como fonte da verdade, `JobQueue` só como despertador:** cada lembrete é salvo no SQLite e o agendador guarda só o número dele. Na hora de enviar, o texto é lido do banco; um lembrete cancelado no meio do caminho simplesmente não é achado. O lembrete só é apagado **depois** que o Telegram confirma o envio: se a internet cair, ele continua salvo e sai quando o bot voltar. Datas ficam em UTC, sempre no mesmo formato de texto, para a ordem alfabética ser a cronológica.
 - **Lembrete atrasado não se perde:** por padrão, o agendador (APScheduler) descarta em silêncio um job que dispara com mais de 1 segundo de atraso, o que aconteceria com o PC hibernando ou com lembretes vencidos com o bot desligado. Confirmei isso com o agendador de verdade (um job 3 horas atrasado foi descartado) e desliguei o limite (`misfire_grace_time=None`).
 - **Diário conta a partir de agora:** depois de cada envio, o próximo é marcado para a próxima vez que o relógio chegar ao horário. Se o bot ficou 3 dias desligado, sai uma mensagem só, e não três.
+- **Banco antigo ganha a coluna nova sozinho:** os lembretes semanais precisaram de uma coluna `semanal`. Ao abrir, o bot confere as colunas da tabela (`PRAGMA table_info`) e, se faltar, acrescenta com `ALTER TABLE`, valendo 0 para os lembretes que já existiam. Assim o banco do servidor foi atualizado com um `git pull` e um reinício, sem perder nada. O dia da semana não é guardado à parte: vem da própria data do próximo envio.
 - **"18:30" é horário, "18h" é duração:** só o formato com dois-pontos vira horário fixo, porque `/lembrar 18h ...` já queria dizer "daqui a 18 horas".
 - **Cancelar só o que é seu:** o `/cancelar` filtra pelo chat no próprio SQL, então chutar números não apaga lembretes de outra pessoa. Os números usam `AUTOINCREMENT` para nunca serem reaproveitados.
 - **Porteiro antes dos comandos:** a lista de permitidos é um handler que roda num grupo anterior ao de todos os comandos e interrompe o processamento (`ApplicationHandlerStop`) de quem não está nela. Assim nenhum comando novo fica aberto por esquecimento. O `/meuid` roda num grupo ainda anterior, para funcionar para qualquer pessoa.
@@ -165,4 +167,4 @@ bot-utilidades/
 - [x] Alerta de preço: avisar quando o Bitcoin (ou o dólar) chegar a um valor
 - [x] Hospedar o bot num servidor para ficar online 24 horas (Oracle Cloud, systemd)
 - [x] Lembretes numa data específica (`/lembrar 25/12 9:00 ...`)
-- [ ] Lembretes semanais num dia da semana e horário escolhidos (`/lembrar toda quinta 19:00 ...`)
+- [x] Lembretes semanais num dia da semana e horário escolhidos (`/lembrar toda quinta 19:00 ...`)

@@ -28,7 +28,9 @@ COMANDOS = [
     BotCommand("bitcoin", "preço do Bitcoin em reais"),
     BotCommand("dolar", "cotação do dólar"),
     BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
-    BotCommand("lembrar", "lembrete, ex.: /lembrar 10m ou 18:30 ou 25/12 9:00 ou todo dia 8:00"),
+    BotCommand(
+        "lembrar", "lembrete, ex.: /lembrar 10m, 18:30, 25/12 9:00, todo dia 8:00 ou toda quinta 19:00"
+    ),
     BotCommand("lembretes", "lista seus lembretes pendentes"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
     BotCommand("alerta", "avisa quando o preço chegar, ex.: /alerta bitcoin acima 400000"),
@@ -155,7 +157,9 @@ async def lembrar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    lembrete = banco.adicionar(chat_id, pedido.texto, pedido.quando, pedido.diario)
+    lembrete = banco.adicionar(
+        chat_id, pedido.texto, pedido.quando, diario=pedido.diario, semanal=pedido.semanal
+    )
     agendar(context.job_queue, lembrete)
     await update.message.reply_text(lembretes.confirmar(pedido, hora))
 
@@ -173,8 +177,8 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         mensagem = f"⏰ Lembrete: {lembrete.texto}"
 
-    if lembrete.diario:
-        mensagem += f"\n(todo dia; para parar: /cancelar {lembrete.id})"
+    if lembrete.diario or lembrete.semanal:
+        mensagem += f"\n({repeticao(lembrete)}; para parar: /cancelar {lembrete.id})"
 
     try:
         await context.bot.send_message(lembrete.chat_id, mensagem)
@@ -186,18 +190,29 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Só mexe no banco depois de enviar: se a internet cair no envio, o erro sobe,
     # o lembrete continua como estava e sai quando o bot for reiniciado.
-    if lembrete.diario:
+    if lembrete.diario or lembrete.semanal:
         # Conta a partir de agora, não do horário antigo: se o bot ficou dias
-        # desligado, o lembrete sai uma vez só em vez de um por dia perdido.
-        horario = lembrete.quando.astimezone(lembretes.FUSO).time()
-        agendar(context.job_queue, banco.adiar(lembrete.id, lembretes.proxima_vez(horario, hora)))
+        # desligado, o lembrete sai uma vez só em vez de um por dia (ou semana) perdido.
+        quando = lembrete.quando.astimezone(lembretes.FUSO)
+        if lembrete.semanal:
+            proxima = lembretes.proxima_vez_no_dia(quando.weekday(), quando.time(), hora)
+        else:
+            proxima = lembretes.proxima_vez(quando.time(), hora)
+        agendar(context.job_queue, banco.adiar(lembrete.id, proxima))
     else:
         banco.remover(lembrete.id)
 
 
+def repeticao(lembrete: Lembrete) -> str:
+    """"todo dia" ou "toda quinta", conforme o lembrete repetido."""
+    if lembrete.semanal:
+        return lembretes.toda_semana(lembrete.quando.astimezone(lembretes.FUSO).weekday())
+    return "todo dia"
+
+
 def descrever_quando(lembrete: Lembrete, hora: datetime) -> str:
-    if lembrete.diario:
-        return f"todo dia às {lembrete.quando.astimezone(lembretes.FUSO):%H:%M}"
+    if lembrete.diario or lembrete.semanal:
+        return f"{repeticao(lembrete)} às {lembrete.quando.astimezone(lembretes.FUSO):%H:%M}"
     return lembretes.descrever_horario(lembrete.quando, hora)
 
 

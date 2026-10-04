@@ -24,9 +24,16 @@ CREATE TABLE IF NOT EXISTS lembretes (
     chat_id INTEGER NOT NULL,
     texto   TEXT    NOT NULL,
     quando  TEXT    NOT NULL,  -- data e hora em UTC, no FORMATO_DATA (a próxima, se for diário)
-    diario  INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1))  -- 1 = repete todo dia
+    diario  INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1)),  -- 1 = repete todo dia
+    semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1))  -- 1 = repete toda semana
 )
 """
+
+# Bancos criados antes dos lembretes semanais não têm a coluna: ela é acrescentada
+# ao abrir, e os lembretes que já existiam ficam com semanal = 0.
+ACRESCENTAR_SEMANAL = (
+    "ALTER TABLE lembretes ADD COLUMN semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1))"
+)
 
 
 CRIAR_TABELA_ALERTAS = """
@@ -56,6 +63,7 @@ class Lembrete:
     texto: str
     quando: datetime  # sempre com fuso (UTC)
     diario: bool = False
+    semanal: bool = False  # o dia da semana e o horário vêm do próprio "quando"
 
 
 def para_texto(momento: datetime) -> str:
@@ -73,6 +81,9 @@ class Banco:
         with self._conectar() as conexao:
             conexao.execute(CRIAR_TABELA)
             conexao.execute(CRIAR_TABELA_ALERTAS)
+            colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(lembretes)")}
+            if "semanal" not in colunas:
+                conexao.execute(ACRESCENTAR_SEMANAL)
 
     @contextmanager
     def _conectar(self) -> Iterator[sqlite3.Connection]:
@@ -89,15 +100,21 @@ class Banco:
             linha["texto"],
             de_texto(linha["quando"]),
             bool(linha["diario"]),
+            bool(linha["semanal"]),
         )
 
     def adicionar(
-        self, chat_id: int, texto: str, quando: datetime, diario: bool = False
+        self,
+        chat_id: int,
+        texto: str,
+        quando: datetime,
+        diario: bool = False,
+        semanal: bool = False,
     ) -> Lembrete:
         with self._conectar() as conexao:
             cursor = conexao.execute(
-                "INSERT INTO lembretes (chat_id, texto, quando, diario) VALUES (?, ?, ?, ?)",
-                (chat_id, texto, para_texto(quando), int(diario)),
+                "INSERT INTO lembretes (chat_id, texto, quando, diario, semanal) VALUES (?, ?, ?, ?, ?)",
+                (chat_id, texto, para_texto(quando), int(diario), int(semanal)),
             )
         return self.buscar(cursor.lastrowid)
 
@@ -134,7 +151,7 @@ class Banco:
         return cursor.rowcount > 0
 
     def adiar(self, id: int, quando: datetime) -> Lembrete | None:
-        """Muda a data do lembrete (usado pelos diários depois de cada envio)."""
+        """Muda a data do lembrete (usado pelos diários e semanais depois de cada envio)."""
         with self._conectar() as conexao:
             conexao.execute(
                 "UPDATE lembretes SET quando = ? WHERE id = ?", (para_texto(quando), id)

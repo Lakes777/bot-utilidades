@@ -1,3 +1,5 @@
+import sqlite3
+from contextlib import closing
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
@@ -99,6 +101,38 @@ def test_lembrete_diario(tmp_path):
     diario = banco.adicionar(1, "remédio", QUANDO, diario=True)
     assert diario.diario is True
     assert Banco(tmp_path / "lembretes.db").buscar(diario.id).diario is True
+
+
+def test_lembrete_semanal(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    assert banco.adicionar(1, "avulso", QUANDO).semanal is False
+    semanal = banco.adicionar(1, "futebol", QUANDO, semanal=True)
+    assert semanal.semanal is True and semanal.diario is False
+    assert Banco(tmp_path / "lembretes.db").buscar(semanal.id).semanal is True
+
+
+def test_acrescenta_a_coluna_semanal_num_banco_antigo(tmp_path):
+    # Banco criado antes dos lembretes semanais, como o que já está no servidor.
+    caminho = tmp_path / "lembretes.db"
+    with closing(sqlite3.connect(caminho)) as conexao, conexao:
+        conexao.execute(
+            "CREATE TABLE lembretes (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,"
+            " texto TEXT NOT NULL, quando TEXT NOT NULL,"
+            " diario INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1)))"
+        )
+        conexao.execute(
+            "INSERT INTO lembretes (chat_id, texto, quando, diario)"
+            " VALUES (42, 'remédio', '2026-09-27 11:00:00', 1)"
+        )
+
+    banco = Banco(caminho)
+    [antigo] = banco.todos()
+    assert antigo.texto == "remédio" and antigo.diario and not antigo.semanal
+    novo = banco.adicionar(42, "futebol", QUANDO, semanal=True)
+    assert banco.buscar(novo.id).semanal
+
+    Banco(caminho)  # abrir de novo não tenta acrescentar a coluna outra vez
+    assert len(Banco(caminho).todos()) == 2
 
 
 def test_adiar(tmp_path):

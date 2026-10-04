@@ -13,13 +13,16 @@ from bot_utilidades.lembretes import (
     encurtar,
     interpretar,
     ler_data,
+    ler_dia_da_semana,
     ler_horario,
     ler_numero,
     ler_tempo,
     proxima_vez,
+    proxima_vez_no_dia,
+    toda_semana,
 )
 
-AGORA = datetime(2026, 9, 27, 10, 0, tzinfo=FUSO)
+AGORA = datetime(2026, 9, 27, 10, 0, tzinfo=FUSO)  # um domingo
 
 
 @pytest.mark.parametrize(
@@ -278,6 +281,115 @@ def test_data_no_meio_do_texto_nao_e_data():
 
 
 @pytest.mark.parametrize(
+    ("palavra", "esperado"),
+    [
+        ("segunda", 0), ("Terça", 1), ("terca", 1), ("quarta-feira", 2), ("QUINTA", 3),
+        ("Quinta-Feira", 3), ("sexta", 4), ("sábado", 5), ("sabado", 5), ("domingo", 6),
+        ("seg", 0), ("qui", 3), ("sáb", 5), ("dom", 6),
+        ("quintas", 3), ("sábados", 5), ("quintas-feiras", 3), ("domingos", 6),
+    ],
+)
+def test_le_dias_da_semana(palavra, esperado):
+    assert ler_dia_da_semana(palavra) == esperado
+
+
+@pytest.mark.parametrize("palavra", ["dia", "dias", "semana", "feira", "s", "8:00", ""])
+def test_o_que_nao_e_dia_da_semana(palavra):
+    assert ler_dia_da_semana(palavra) is None
+
+
+@pytest.mark.parametrize(
+    ("dia", "esperado"), [(0, "toda segunda"), (3, "toda quinta"), (5, "todo sábado"), (6, "todo domingo")]
+)
+def test_toda_semana(dia, esperado):
+    assert toda_semana(dia) == esperado
+
+
+@pytest.mark.parametrize(
+    ("dia", "horario", "esperado"),
+    [
+        (3, time(19, 0), datetime(2026, 10, 1, 19, 0, tzinfo=FUSO)),  # quinta que vem
+        (0, time(8, 0), datetime(2026, 9, 28, 8, 0, tzinfo=FUSO)),  # amanhã é segunda
+        (6, time(18, 0), datetime(2026, 9, 27, 18, 0, tzinfo=FUSO)),  # hoje, mais tarde
+        (6, time(8, 0), datetime(2026, 10, 4, 8, 0, tzinfo=FUSO)),  # hoje, mas já passou
+        (6, time(10, 0), datetime(2026, 10, 4, 10, 0, tzinfo=FUSO)),  # é agora: semana que vem
+        (5, time(9, 0), datetime(2026, 10, 3, 9, 0, tzinfo=FUSO)),  # ontem foi sábado
+    ],
+)
+def test_proxima_vez_no_dia(dia, horario, esperado):
+    assert proxima_vez_no_dia(dia, horario, AGORA) == esperado
+
+
+def test_proxima_vez_no_dia_usa_o_relogio_de_brasilia():
+    # 01:00 em UTC de segunda (28) ainda é 22:00 de domingo (27) em Brasília.
+    agora_utc = datetime(2026, 9, 28, 1, 0, tzinfo=timezone.utc)
+    assert proxima_vez_no_dia(6, time(23, 0), agora_utc) == datetime(2026, 9, 27, 23, 0, tzinfo=FUSO)
+
+
+@pytest.mark.parametrize(
+    "inicio",
+    [
+        ["toda", "quinta"],
+        ["Toda", "Quinta-feira"],
+        ["toda", "quinta", "feira"],
+        ["toda", "quinta", "às"],
+        ["toda", "qui", "as"],
+        ["todo", "quinta"],
+        ["todas", "as", "quintas"],
+        ["Todas", "as", "quintas-feiras", "às"],
+        ["toda", "quintas", "feiras"],
+    ],
+)
+def test_interpreta_lembrete_semanal(inicio):
+    assert interpretar([*inicio, "19:00", "futebol"], AGORA) == Pedido(
+        datetime(2026, 10, 1, 19, 0, tzinfo=FUSO), "futebol", semanal=True
+    )
+
+
+def test_todo_sabado():
+    pedido = interpretar(["todo", "sábado", "9:30", "feira", "livre"], AGORA)
+    assert pedido == Pedido(datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), "feira livre", semanal=True)
+
+
+def test_todos_os_sabados():
+    pedido = interpretar(["todos", "os", "sábados", "9:30", "feira"], AGORA)
+    assert pedido == Pedido(datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), "feira", semanal=True)
+
+
+def test_semanal_na_virada_do_ano_mostra_o_ano():
+    agora = datetime(2026, 12, 29, 10, 0, tzinfo=FUSO)  # uma terça
+    pedido = interpretar(["toda", "sexta", "18:00", "pizza"], agora)
+    assert confirmar(pedido, agora) == (
+        "✅ Combinado! Toda sexta às 18:00 eu te lembro: pizza\nO primeiro é em 01/01/2027."
+    )
+
+
+def test_semanal_precisa_de_horario():
+    with pytest.raises(LembreteError, match="Não entendi o horário"):
+        interpretar(["toda", "quinta", "futebol", "com", "a", "galera"], AGORA)
+
+
+@pytest.mark.parametrize(
+    "palavras", [["toda", "quinta"], ["toda", "quinta", "19:00"], ["toda", "quinta-feira", "às", "19:00"]]
+)
+def test_semanal_sem_texto_mostra_como_usar(palavras):
+    with pytest.raises(LembreteError, match="Use assim"):
+        interpretar(palavras, AGORA)
+
+
+def test_toda_no_meio_do_texto_nao_e_semanal():
+    pedido = interpretar(["10m", "toda", "quinta", "tem", "futebol"], AGORA)
+    assert not pedido.semanal
+    assert pedido.texto == "toda quinta tem futebol"
+
+
+def test_toda_sem_dia_da_semana_nao_e_semanal():
+    # "toda" seguido de outra coisa cai no caminho normal e dá erro de tempo.
+    with pytest.raises(LembreteError, match="Não entendi o tempo"):
+        interpretar(["toda", "hora", "beber", "água"], AGORA)
+
+
+@pytest.mark.parametrize(
     ("palavras", "esperado"),
     [
         (["1h30m", "reunião"], "✅ Combinado! Daqui a 1h30min (às 11:30) eu te lembro: reunião"),
@@ -288,6 +400,18 @@ def test_data_no_meio_do_texto_nao_e_data():
         (["28/09", "ligar"], "✅ Combinado! Amanhã às 09:00 eu te lembro: ligar"),
         (["25/12", "20:30", "ceia"], "✅ Combinado! Em 25/12 às 20:30 eu te lembro: ceia"),
         (["5/1", "boleto"], "✅ Combinado! Em 05/01/2027 às 09:00 eu te lembro: boleto"),
+        (
+            ["toda", "quinta", "19:00", "futebol"],
+            "✅ Combinado! Toda quinta às 19:00 eu te lembro: futebol\nO primeiro é em 01/10.",
+        ),
+        (
+            ["todo", "domingo", "20:00", "lavar", "roupa"],
+            "✅ Combinado! Todo domingo às 20:00 eu te lembro: lavar roupa\nO primeiro é hoje.",
+        ),
+        (
+            ["toda", "segunda", "8:00", "academia"],
+            "✅ Combinado! Toda segunda às 08:00 eu te lembro: academia\nO primeiro é amanhã.",
+        ),
         (
             ["todo", "dia", "22:00", "remédio"],
             "✅ Combinado! Todo dia às 22:00 eu te lembro: remédio\nO primeiro é hoje.",

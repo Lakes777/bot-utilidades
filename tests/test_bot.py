@@ -349,6 +349,66 @@ def test_lista_mostra_os_diarios(banco):
     assert "#1 todo dia às 08:00: remédio" in resposta
 
 
+def test_lembrar_toda_quinta(banco):
+    _, respostas = simular_lembrar(["toda", "quinta", "19:00", "futebol"], banco)
+
+    [lembrete] = banco.todos()
+    assert lembrete.quando == datetime(2026, 10, 1, 19, 0, tzinfo=FUSO)
+    assert lembrete.semanal and not lembrete.diario
+    assert respostas[0].startswith("✅ Combinado! Toda quinta às 19:00 eu te lembro: futebol")
+
+
+def test_lembrar_toda_quinta_feira_as(banco):
+    _, respostas = simular_lembrar(["toda", "quinta", "feira", "às", "19:00", "futebol"], banco)
+
+    [lembrete] = banco.todos()
+    assert lembrete.quando == datetime(2026, 10, 1, 19, 0, tzinfo=FUSO)
+    assert lembrete.semanal and lembrete.texto == "futebol"
+    assert respostas == [
+        "✅ Combinado! Toda quinta às 19:00 eu te lembro: futebol\nO primeiro é em 01/10."
+    ]
+
+
+def test_lembrete_semanal_e_reagendado_para_a_semana_que_vem(banco):
+    lembrete = banco.adicionar(42, "lavar roupa", AGORA, semanal=True)  # domingo 10:00
+    agendados = []
+
+    [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id, agendados=agendados)
+
+    assert mensagem == "⏰ Lembrete: lavar roupa\n(todo domingo; para parar: /cancelar 1)"
+    [proximo] = banco.todos()
+    assert proximo.quando == AGORA + timedelta(days=7)
+    assert proximo.semanal
+    [kwargs] = agendados
+    assert kwargs["when"] == proximo.quando
+
+
+def test_semanal_atrasado_sai_uma_vez_so(banco):
+    # Era quinta (24/09) às 19:00 e o bot ficou desligado até domingo: sai uma vez
+    # e a próxima é a quinta que vem, não a que já passou.
+    lembrete = banco.adicionar(42, "futebol", datetime(2026, 9, 24, 19, 0, tzinfo=FUSO), semanal=True)
+
+    [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id)
+
+    assert mensagem.startswith("⏰ Lembrete atrasado (era para 24/09 às 19:00): futebol")
+    assert banco.buscar(lembrete.id).quando == datetime(2026, 10, 1, 19, 0, tzinfo=FUSO)
+
+
+def test_semanal_nao_avanca_se_o_envio_falhar(banco):
+    lembrete = banco.adicionar(42, "futebol", AGORA, semanal=True)
+    with pytest.raises(OSError):
+        simular_envio(banco, lembrete.id, erro=OSError("sem rede"))
+    assert banco.buscar(lembrete.id) == lembrete
+
+
+def test_lista_mostra_os_semanais(banco):
+    banco.adicionar(42, "futebol", datetime(2026, 10, 1, 19, 0, tzinfo=FUSO), semanal=True)
+    banco.adicionar(42, "feira", datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), semanal=True)
+    [resposta] = simular_comando(listar_lembretes, [], banco)
+    assert "#1 toda quinta às 19:00: futebol" in resposta
+    assert "#2 todo sábado às 09:30: feira" in resposta
+
+
 def mensagem_de(usuario_id, texto, update_id=1):
     """Monta um Update igual ao que o Telegram manda quando alguém digita um comando."""
     return {

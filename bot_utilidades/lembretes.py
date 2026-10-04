@@ -1,11 +1,12 @@
 """Interpreta pedidos de lembrete como "10m tomar água", "18:30 reunião",
-"25/12 9:00 ligar pra vó" ou "todo dia 8:00 tomar remédio".
+"25/12 9:00 ligar pra vó", "todo dia 8:00 tomar remédio" ou "toda quinta 19:00 futebol".
 
 Não depende do Telegram: só entende o texto e faz as contas de horário.
 Quem salva e agenda é o bot.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -32,6 +33,18 @@ HORARIO_PADRAO = time(9, 0)
 # Até onde uma data com ano pode ir; também só evita erros de digitação ("25/12/2226").
 ANOS_MAXIMOS = 5
 
+# Dias da semana na ordem do Python (segunda = 0), sem acento, com as abreviações.
+DIAS_DA_SEMANA = {
+    "segunda": 0, "seg": 0,
+    "terca": 1, "ter": 1,
+    "quarta": 2, "qua": 2,
+    "quinta": 3, "qui": 3,
+    "sexta": 4, "sex": 4,
+    "sabado": 5, "sab": 5,
+    "domingo": 6, "dom": 6,
+}
+NOMES_DOS_DIAS = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+
 # Os lembretes ficam salvos no banco, então sobrevivem a reinicializações;
 # o limite só evita erros de digitação como "1000d".
 PRAZO_MAXIMO = timedelta(days=365)
@@ -48,6 +61,7 @@ USO = (
     "/lembrar 18:30 ligar pra mãe\n"
     "/lembrar 25/12 9:00 ligar pra vó\n"
     "/lembrar todo dia 8:00 tomar remédio\n"
+    "/lembrar toda quinta 19:00 futebol\n"
     "Tempos aceitos: 10m, 2h, 1h30m, 1d"
 )
 
@@ -67,6 +81,7 @@ class Pedido:
     quando: datetime
     texto: str
     diario: bool = False
+    semanal: bool = False  # repete toda semana no mesmo dia e horário
     tempo: timedelta | None = None  # preenchido só em "daqui a X" ("10m", "2h"...)
 
 
@@ -152,12 +167,50 @@ def ler_data(texto: str, horario: time | None, agora: datetime) -> datetime:
     return momento
 
 
+def sem_acento(texto: str) -> str:
+    """sem_acento("Sábado") -> "sabado"."""
+    decomposto = unicodedata.normalize("NFD", texto.lower())
+    return "".join(c for c in decomposto if not unicodedata.combining(c))
+
+
+def ler_dia_da_semana(palavra: str) -> int | None:
+    """"quinta", "Quinta-feira", "quintas", "sáb" -> número do dia (segunda = 0); None se não for dia."""
+    palavra = sem_acento(palavra).removesuffix("-feiras").removesuffix("-feira")
+    if palavra not in DIAS_DA_SEMANA:
+        palavra = palavra.removesuffix("s")  # plural: "todas as quintas", "todos os sábados"
+    return DIAS_DA_SEMANA.get(palavra)
+
+
+def toda_semana(dia: int) -> str:
+    """toda_semana(3) -> "toda quinta"; toda_semana(5) -> "todo sábado"."""
+    return ("todo " if dia >= 5 else "toda ") + NOMES_DOS_DIAS[dia]
+
+
+def proxima_vez_no_dia(dia: int, horario: time, agora: datetime) -> datetime:
+    """A próxima vez que for aquele dia da semana naquele horário, em Brasília."""
+    agora = agora.astimezone(FUSO)
+    faltam = (dia - agora.weekday()) % 7
+    momento = datetime.combine(agora.date() + timedelta(days=faltam), horario, tzinfo=FUSO)
+    if momento <= agora:
+        momento += timedelta(days=7)
+    return momento
+
+
 def interpretar(palavras: list[str], agora: datetime) -> Pedido:
     """["10m", "tomar", "água"] -> Pedido(quando=agora + 10 minutos, texto="tomar água").
 
     Também entende ["18:30", ...] (horário fixo), ["25/12", "9:00", ...] (data, com
-    horário opcional, também "25/12 às 9:00") e ["todo", "dia", "8:00", ...] (diário).
+    horário opcional, também "25/12 às 9:00"), ["todo", "dia", "8:00", ...] (diário)
+    e ["toda", "quinta", "19:00", ...] (semanal).
     """
+    if palavras and sem_acento(palavras[0]) in ("toda", "todo", "todas", "todos"):
+        resto = palavras[1:]
+        if resto and sem_acento(resto[0]) in ("as", "os"):  # "todas as quintas"
+            resto = resto[1:]
+        dia = ler_dia_da_semana(resto[0]) if resto else None
+        if dia is not None:
+            return interpretar_semanal(dia, resto[1:], agora)
+
     diario = [p.lower() for p in palavras[:2]] == ["todo", "dia"]
     if diario:
         palavras = palavras[2:]
@@ -196,6 +249,18 @@ def interpretar_data(palavras: list[str], agora: datetime) -> Pedido:
     return Pedido(ler_data(data, horario, agora), ler_texto(resto))
 
 
+def interpretar_semanal(dia: int, palavras: list[str], agora: datetime) -> Pedido:
+    """dia=3, ["19:00", "futebol"] ou ["feira", "às", "19:00", "futebol"]."""
+    if palavras and sem_acento(palavras[0]) in ("feira", "feiras"):  # "toda quinta feira", sem hífen
+        palavras = palavras[1:]
+    if palavras and sem_acento(palavras[0]) == "as":
+        palavras = palavras[1:]
+    if len(palavras) < 2:
+        raise LembreteError(USO)
+    horario = ler_horario(palavras[0])
+    return Pedido(proxima_vez_no_dia(dia, horario, agora), ler_texto(palavras[1:]), semanal=True)
+
+
 def ler_texto(palavras: list[str]) -> str:
     texto = " ".join(palavras)
     if len(texto) > TAMANHO_MAXIMO:
@@ -214,6 +279,13 @@ def confirmar(pedido: Pedido, agora: datetime) -> str:
     else:
         dia = None
 
+    if pedido.semanal:
+        formato = "%d/%m" if quando.year == hoje.year else "%d/%m/%Y"
+        primeiro = dia or f"em {quando:{formato}}"
+        return (
+            f"✅ Combinado! {toda_semana(quando.weekday()).capitalize()} às {quando:%H:%M} "
+            f"eu te lembro: {pedido.texto}\nO primeiro é {primeiro}."
+        )
     if pedido.diario:
         return (
             f"✅ Combinado! Todo dia às {quando:%H:%M} eu te lembro: {pedido.texto}\n"
