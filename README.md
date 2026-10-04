@@ -168,3 +168,13 @@ bot-utilidades/
 - [x] Hospedar o bot num servidor para ficar online 24 horas (Oracle Cloud, systemd)
 - [x] Lembretes numa data específica (`/lembrar 25/12 9:00 ...`)
 - [x] Lembretes semanais num dia da semana e horário escolhidos (`/lembrar toda quinta 19:00 ...`)
+- [ ] Botões no lembrete: adiar 10 min, adiar 1 h e feito
+- [ ] Lembretes em dias úteis e em vários dias (`seg e qua`)
+- [ ] Lembrete mensal (`todo dia 10 9:00 ...`)
+- [ ] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)
+- [ ] Aviso de chuva de manhã
+- [ ] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)
+- [ ] Conversor de moedas (`/converter 100 usd`)
+- [ ] Lançar gastos no Spendwise pelo Telegram (`/gasto 35 mercado`)
+- [ ] Avisar os prazos do Coursebook
+- [ ] Avisar episódio novo de anime do Hanami
