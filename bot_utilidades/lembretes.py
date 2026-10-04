@@ -73,6 +73,17 @@ USO = (
 
 USO_CANCELAR = "Use assim: /cancelar 3\nOs números aparecem em /lembretes"
 
+USO_MUDAR = (
+    "Use assim:\n"
+    "/mudar 3 20:00 (mantém a repetição, se houver)\n"
+    "/mudar 3 25/12 9:00\n"
+    "/mudar 3 toda sexta 18:00\n"
+    "Os números aparecem em /lembretes"
+)
+
+# Ocupa o lugar do texto quando /mudar reaproveita o interpretar() do /lembrar.
+_SEM_TEXTO = "\x00"
+
 # Na lista, textos longos são cortados para a mensagem caber no limite do Telegram
 # mesmo com LIMITE_POR_CHAT lembretes.
 TAMANHO_NA_LISTA = 40
@@ -425,6 +436,22 @@ def ler_texto(palavras: list[str]) -> str:
     return texto
 
 
+def avisos_do_mensal(pedido: Pedido) -> str:
+    """Linhas extras da confirmação de um mensal (vazio se não for mensal)."""
+    dia = pedido.dia_do_mes
+    if dia is None:
+        return ""
+    aviso = ""
+    if dia > 28:
+        aviso += f"\nNos meses sem dia {dia}, vem no último dia do mês."
+    if pedido.sem_horario and dia <= 23:
+        # "todo dia 8 remédio" quase sempre queria dizer 8h, todo dia.
+        texto = "" if pedido.texto == _SEM_TEXTO else f" {pedido.texto}"
+        comando = "/mudar N" if not texto else "/lembrar"
+        aviso += f"\nSe queria todo dia às {dia}h, use {comando} todo dia {dia}:00{texto}"
+    return aviso
+
+
 def confirmar(pedido: Pedido, agora: datetime) -> str:
     """A mensagem que o bot responde depois de salvar o pedido."""
     quando = pedido.quando.astimezone(FUSO)
@@ -439,14 +466,7 @@ def confirmar(pedido: Pedido, agora: datetime) -> str:
     formato = "%d/%m" if quando.year == hoje.year else "%d/%m/%Y"
     primeiro = dia or f"em {quando:{formato}}"
     if pedido.dia_do_mes is not None:
-        aviso = ""
-        if pedido.dia_do_mes > 28:
-            aviso += f"\nNos meses sem dia {pedido.dia_do_mes}, vem no último dia do mês."
-        if pedido.sem_horario and pedido.dia_do_mes <= 23:
-            aviso += (
-                f"\nSe queria todo dia às {pedido.dia_do_mes}h, use "
-                f"/lembrar todo dia {pedido.dia_do_mes}:00 {pedido.texto}"
-            )
+        aviso = avisos_do_mensal(pedido)
         return (
             f"✅ Combinado! Todo mês, no dia {pedido.dia_do_mes}, às {quando:%H:%M}, "
             f"eu te lembro: {pedido.texto}\nO primeiro é {primeiro}.{aviso}"
@@ -471,14 +491,40 @@ def confirmar(pedido: Pedido, agora: datetime) -> str:
     )
 
 
-def ler_numero(palavras: list[str]) -> int:
+def ler_numero(palavras: list[str], uso: str = USO_CANCELAR) -> int:
     """["3"] ou ["#3"] -> 3."""
     if len(palavras) != 1:
-        raise LembreteError(USO_CANCELAR)
+        raise LembreteError(uso)
     numero = palavras[0].removeprefix("#")
     if not numero.isdecimal():
-        raise LembreteError(USO_CANCELAR)
+        raise LembreteError(uso)
     return int(numero)
+
+
+def interpretar_mudanca(palavras: list[str], agora: datetime) -> tuple[int, Pedido | time]:
+    """["3", "20:00"] -> (3, time(20, 0)); ["3", "25/12", "9:00"] -> (3, Pedido(...)).
+
+    Só um horário vira time: quem chama decide se mantém a repetição do lembrete.
+    O resto usa o mesmo formato do /lembrar, sem o texto.
+    """
+    numero = ler_numero(palavras[:1], USO_MUDAR)
+    quando = palavras[1:]
+    if not quando:
+        raise LembreteError(USO_MUDAR)
+    if len(quando) == 1 and FORMATO_HORARIO.match(quando[0]):
+        return numero, ler_horario(quando[0])
+    try:
+        pedido = interpretar([*quando, _SEM_TEXTO], agora)
+    except LembreteError as erro:
+        mensagem = str(erro)
+        if _SEM_TEXTO in mensagem or mensagem == USO:
+            raise LembreteError(USO_MUDAR) from None
+        if USO in mensagem:  # "Não entendi o tempo ... Use assim: /lembrar ..."
+            raise LembreteError(mensagem.replace(USO, USO_MUDAR)) from None
+        raise
+    if pedido.texto != _SEM_TEXTO:  # sobrou texto: "/mudar 3 20:00 outra coisa"
+        raise LembreteError("O /mudar troca só o quando, não o texto.\n" + USO_MUDAR)
+    return numero, pedido
 
 
 def encurtar(texto: str, tamanho: int = TAMANHO_NA_LISTA) -> str:

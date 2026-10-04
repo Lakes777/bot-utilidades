@@ -219,6 +219,32 @@ def test_envios_antigos_sao_apagados(tmp_path):
     assert banco.tirar_envio(recente.id, 42) == recente
 
 
+def test_mudar_so_no_proprio_chat(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    lembrete = banco.adicionar(42, "remédio", QUANDO, diario=True)
+    novo = QUANDO + timedelta(hours=2)
+
+    assert banco.mudar(lembrete.id, 7, novo) is None
+    assert banco.buscar(lembrete.id) == lembrete
+
+    mudado = banco.mudar(lembrete.id, 42, novo, semanal=True, dias=(0, 2))
+    assert mudado.quando == novo and mudado.semanal and not mudado.diario
+    assert mudado.dias == (0, 2) and mudado.texto == "remédio"
+
+
+def test_adiar_e_remover_so_se_a_data_nao_mudou(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    lembrete = banco.adicionar(42, "remédio", QUANDO, diario=True)
+    outra = QUANDO + timedelta(hours=1)
+
+    assert banco.adiar(lembrete.id, outra, se_quando=outra) is None
+    assert banco.remover(lembrete.id, se_quando=outra) is False
+    assert banco.buscar(lembrete.id) == lembrete
+
+    assert banco.adiar(lembrete.id, outra, se_quando=QUANDO).quando == outra
+    assert banco.remover(lembrete.id, se_quando=outra) is True
+
+
 def test_adiar(tmp_path):
     banco = Banco(tmp_path / "lembretes.db")
     diario = banco.adicionar(1, "remédio", QUANDO, diario=True)

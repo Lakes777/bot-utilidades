@@ -12,6 +12,7 @@ from bot_utilidades.lembretes import (
     descrever_horario,
     encurtar,
     interpretar,
+    interpretar_mudanca,
     ler_data,
     ler_dia_da_semana,
     ler_horario,
@@ -680,3 +681,52 @@ def test_encurta_textos_longos():
     assert encurtar("a" * 40) == "a" * 40
     assert encurtar("a" * 41) == "a" * 39 + "…"
     assert len(encurtar("a" * 500)) == 40
+
+
+def test_mudanca_so_com_horario_devolve_o_horario():
+    assert interpretar_mudanca(["3", "20:00"], AGORA) == (3, time(20, 0))
+    assert interpretar_mudanca(["#3", "8:05"], AGORA) == (3, time(8, 5))
+
+
+@pytest.mark.parametrize(
+    ("palavras", "esperado"),
+    [
+        (["25/12", "9:00"], Pedido(datetime(2026, 12, 25, 9, 0, tzinfo=FUSO), "\x00")),
+        (["1h"], Pedido(AGORA + timedelta(hours=1), "\x00", tempo=timedelta(hours=1))),
+        (["toda", "sex", "18:00"],
+         Pedido(datetime(2026, 10, 2, 18, 0, tzinfo=FUSO), "\x00", semanal=True, dias=(4,))),
+        (["todo", "dia", "7:00"], Pedido(datetime(2026, 9, 28, 7, 0, tzinfo=FUSO), "\x00", diario=True)),
+    ],
+)
+def test_mudanca_com_o_formato_do_lembrar(palavras, esperado):
+    assert interpretar_mudanca(["3", *palavras], AGORA) == (3, esperado)
+
+
+@pytest.mark.parametrize(
+    "palavras", [[], ["3"], ["tres", "20:00"], ["3", "toda", "sex"], ["3", "todo", "dia"]]
+)
+def test_mudanca_incompleta_mostra_como_usar(palavras):
+    with pytest.raises(LembreteError, match="/mudar 3 20:00"):
+        interpretar_mudanca(palavras, AGORA)
+
+
+def test_mudanca_nao_troca_o_texto():
+    with pytest.raises(LembreteError, match="troca só o quando"):
+        interpretar_mudanca(["3", "25/12", "9:00", "outra", "coisa"], AGORA)
+
+
+@pytest.mark.parametrize(
+    ("palavras", "erro"),
+    [(["3", "25:00"], "não existe"), (["3", "31/02"], "não existe"), (["3", "20x"], "Não entendi o tempo")],
+)
+def test_mudanca_com_quando_errado_explica(palavras, erro):
+    with pytest.raises(LembreteError, match=erro):
+        interpretar_mudanca(palavras, AGORA)
+
+
+@pytest.mark.parametrize("palavras", [["3", "amanhã"], ["3", "toda", "xyz", "10:00"]])
+def test_erro_do_mudar_nao_mostra_o_uso_do_lembrar(palavras):
+    with pytest.raises(LembreteError) as erro:
+        interpretar_mudanca(palavras, AGORA)
+    assert "/lembrar" not in str(erro.value)
+    assert "/mudar 3 20:00" in str(erro.value)

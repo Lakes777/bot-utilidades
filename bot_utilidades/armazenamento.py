@@ -200,19 +200,60 @@ class Banco:
             ).fetchone()
         return total
 
-    def remover(self, id: int) -> bool:
-        """Apaga o lembrete; devolve False se ele não existia."""
+    def remover(self, id: int, se_quando: datetime | None = None) -> bool:
+        """Apaga o lembrete; devolve False se ele não existia.
+
+        Com se_quando, só apaga se a data ainda for essa (ninguém mudou no meio do envio).
+        """
+        sql, parametros = "DELETE FROM lembretes WHERE id = ?", [id]
+        if se_quando is not None:
+            sql += " AND quando = ?"
+            parametros.append(para_texto(se_quando))
         with self._conectar() as conexao:
-            cursor = conexao.execute("DELETE FROM lembretes WHERE id = ?", (id,))
+            cursor = conexao.execute(sql, parametros)
         return cursor.rowcount > 0
 
-    def adiar(self, id: int, quando: datetime) -> Lembrete | None:
-        """Muda a data do lembrete (usado pelos diários e semanais depois de cada envio)."""
+    def adiar(
+        self, id: int, quando: datetime, se_quando: datetime | None = None
+    ) -> Lembrete | None:
+        """Muda a data do lembrete (usado pelos repetidos depois de cada envio).
+
+        Com se_quando, só muda se a data ainda for essa; senão devolve None.
+        """
+        sql, parametros = "UPDATE lembretes SET quando = ? WHERE id = ?", [para_texto(quando), id]
+        if se_quando is not None:
+            sql += " AND quando = ?"
+            parametros.append(para_texto(se_quando))
         with self._conectar() as conexao:
-            conexao.execute(
-                "UPDATE lembretes SET quando = ? WHERE id = ?", (para_texto(quando), id)
+            cursor = conexao.execute(sql, parametros)
+        return self.buscar(id) if cursor.rowcount else None
+
+    def mudar(
+        self,
+        id: int,
+        chat_id: int,
+        quando: datetime,
+        diario: bool = False,
+        semanal: bool = False,
+        dias: tuple[int, ...] = (),
+        dia_do_mes: int | None = None,
+    ) -> Lembrete | None:
+        """Troca o quando e a repetição, só se o lembrete for deste chat."""
+        with self._conectar() as conexao:
+            cursor = conexao.execute(
+                "UPDATE lembretes SET quando = ?, diario = ?, semanal = ?, dias = ?, dia_do_mes = ?"
+                " WHERE id = ? AND chat_id = ?",
+                (
+                    para_texto(quando),
+                    int(diario),
+                    int(semanal),
+                    ",".join(str(dia) for dia in dias) or None,
+                    dia_do_mes,
+                    id,
+                    chat_id,
+                ),
             )
-        return self.buscar(id)
+        return self.buscar(id) if cursor.rowcount else None
 
     def cancelar(self, id: int, chat_id: int) -> Lembrete | None:
         """Apaga o lembrete só se ele for deste chat; devolve o que foi apagado."""

@@ -24,6 +24,7 @@ from bot_utilidades.bot import (
     reagendar,
     remover_alerta,
     responder_botao,
+    mudar,
 )
 from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -78,7 +79,7 @@ def test_registra_todos_os_comandos(banco):
     # Montar o app não conecta ao Telegram, então o token falso basta.
     esperados = {
         "start", "ajuda", "bitcoin", "dolar", "clima", "lembrar", "lembretes", "cancelar",
-        "alerta", "alertas", "removeralerta",
+        "alerta", "alertas", "removeralerta", "mudar",
     }
     assert esperados <= comandos_registrados(criar_app(TOKEN_FALSO, banco))
 
@@ -162,13 +163,15 @@ def test_limite_de_lembretes_por_chat(banco):
     assert len(agendados) == 1
 
 
-def simular_envio(banco, lembrete_id, erro=None, agendados=None):
+def simular_envio(banco, lembrete_id, erro=None, agendados=None, durante_envio=None):
     falso = Falso()
     enviar = falso.gravar("send_message")
     agendados = [] if agendados is None else agendados
 
     async def send_message(*args, **kwargs):
         await enviar(*args, **kwargs)
+        if durante_envio:
+            durante_envio()  # imita outro comando chegando enquanto a mensagem vai
         if erro:
             raise erro
 
@@ -485,6 +488,143 @@ def test_lista_mostra_os_mensais(banco):
     banco.adicionar(42, "aluguel", datetime(2026, 10, 10, 9, 0, tzinfo=FUSO), dia_do_mes=10)
     [resposta] = simular_comando(listar_lembretes, [], banco)
     assert "#1 todo mês, no dia 10, às 09:00: aluguel" in resposta
+
+
+def simular_mudar(args, banco, chat_id=42):
+    falso = Falso()
+    agendados, removidos = [], []
+    job = SimpleNamespace(name="lembrete-1", schedule_removal=lambda: removidos.append("lembrete-1"))
+    update = SimpleNamespace(
+        message=SimpleNamespace(reply_text=falso.gravar("reply_text")),
+        effective_chat=SimpleNamespace(id=chat_id),
+    )
+    context = SimpleNamespace(
+        args=args,
+        bot_data={"banco": banco},
+        job_queue=SimpleNamespace(
+            run_once=lambda *a, **kw: agendados.append(kw),
+            get_jobs_by_name=lambda nome: [job] if nome == job.name else [],
+        ),
+    )
+    asyncio.run(mudar(update, context))
+    respostas = [args[0] for nome, args, _ in falso.chamadas if nome == "reply_text"]
+    return respostas, agendados, removidos
+
+
+def test_mudar_horario_de_um_diario_mantem_a_repeticao(banco):
+    banco.adicionar(42, "remédio", datetime(2026, 9, 28, 8, 0, tzinfo=FUSO), diario=True)
+
+    respostas, agendados, removidos = simular_mudar(["1", "20:00"], banco)
+
+    [lembrete] = banco.todos()
+    assert lembrete.diario and lembrete.quando == datetime(2026, 9, 27, 20, 0, tzinfo=FUSO)
+    assert respostas == ["✏️ Lembrete #1 agora é todo dia às 20:00: remédio"]
+    assert removidos == ["lembrete-1"]
+    assert agendados[0]["when"] == lembrete.quando
+
+
+def test_mudar_horario_de_um_semanal_de_varios_dias(banco):
+    banco.adicionar(42, "academia", datetime(2026, 9, 28, 7, 0, tzinfo=FUSO), semanal=True, dias=(0, 2))
+    respostas, _, _ = simular_mudar(["1", "19:00"], banco)
+    [lembrete] = banco.todos()
+    assert lembrete.dias == (0, 2) and lembrete.quando == datetime(2026, 9, 28, 19, 0, tzinfo=FUSO)
+    assert respostas == ["✏️ Lembrete #1 agora é toda segunda e quarta às 19:00: academia"]
+
+
+def test_mudar_horario_de_um_mensal(banco):
+    banco.adicionar(42, "aluguel", datetime(2026, 10, 10, 9, 0, tzinfo=FUSO), dia_do_mes=10)
+    respostas, _, _ = simular_mudar(["1", "18:00"], banco)
+    assert banco.todos()[0].quando == datetime(2026, 10, 10, 18, 0, tzinfo=FUSO)
+    assert respostas == ["✏️ Lembrete #1 agora é todo mês, no dia 10, às 18:00: aluguel"]
+
+
+def test_mudar_horario_de_um_avulso_vai_para_hoje_ou_amanha(banco):
+    banco.adicionar(42, "ligar", AGORA + timedelta(days=3))
+    respostas, _, _ = simular_mudar(["1", "9:00"], banco)
+    [lembrete] = banco.todos()
+    assert not lembrete.repete and lembrete.quando == datetime(2026, 9, 28, 9, 0, tzinfo=FUSO)
+    assert respostas == ["✏️ Lembrete #1 agora é 28/09 às 09:00: ligar"]
+
+
+def test_mudar_um_diario_para_uma_data_deixa_de_repetir(banco):
+    banco.adicionar(42, "remédio", datetime(2026, 9, 28, 8, 0, tzinfo=FUSO), diario=True)
+    respostas, _, _ = simular_mudar(["1", "25/12", "9:00"], banco)
+    [lembrete] = banco.todos()
+    assert not lembrete.repete and lembrete.quando == datetime(2026, 12, 25, 9, 0, tzinfo=FUSO)
+    assert respostas == ["✏️ Lembrete #1 agora é 25/12 às 09:00: remédio"]
+
+
+def test_mudar_um_avulso_para_toda_sexta(banco):
+    banco.adicionar(42, "pizza", AGORA + timedelta(hours=1))
+    simular_mudar(["1", "toda", "sexta", "19:00"], banco)
+    [lembrete] = banco.todos()
+    assert lembrete.semanal and lembrete.dias == (4,)
+    assert lembrete.texto == "pizza"
+
+
+def test_mudar_lembrete_de_outro_chat_nao_funciona(banco):
+    original = banco.adicionar(7, "de outra pessoa", AGORA + timedelta(hours=1))
+    respostas, agendados, removidos = simular_mudar(["1", "20:00"], banco)
+    assert banco.buscar(1) == original
+    assert respostas == ["⚠️ Não achei o lembrete #1. Veja os seus em /lembretes"]
+    assert agendados == [] and removidos == []
+
+
+def test_mudar_sem_quando_mostra_como_usar(banco):
+    respostas, _, _ = simular_mudar(["1"], banco)
+    assert respostas[0].startswith("⚠️ Use assim:\n/mudar 3 20:00")
+
+
+def test_mudar_durante_o_envio_de_um_diario_vale_a_mudanca(banco):
+    lembrete = banco.adicionar(42, "remédio", AGORA, diario=True)
+    natal = datetime(2026, 12, 25, 9, 0, tzinfo=FUSO)
+    agendados = []
+
+    simular_envio(
+        banco, lembrete.id, agendados=agendados,
+        durante_envio=lambda: banco.mudar(lembrete.id, 42, natal),
+    )
+
+    [mudado] = banco.todos()
+    assert mudado.quando == natal and not mudado.diario
+    assert agendados == []  # o /mudar já agendou; o envio não agenda de novo
+
+
+def test_mudar_durante_o_envio_de_um_avulso_nao_apaga(banco):
+    lembrete = banco.adicionar(42, "ligar", AGORA)
+    depois = AGORA + timedelta(hours=2)
+    simular_envio(banco, lembrete.id, durante_envio=lambda: banco.mudar(lembrete.id, 42, depois))
+    [mudado] = banco.todos()
+    assert mudado.quando == depois
+
+
+def test_cancelar_durante_o_envio_de_um_diario_nao_quebra(banco):
+    lembrete = banco.adicionar(42, "remédio", AGORA, diario=True)
+    agendados = []
+    simular_envio(
+        banco, lembrete.id, agendados=agendados, durante_envio=lambda: banco.cancelar(lembrete.id, 42)
+    )
+    assert banco.todos() == [] and agendados == []
+
+
+def test_mudar_para_mensal_sem_horario_avisa(banco):
+    banco.adicionar(42, "remédio", datetime(2026, 9, 28, 8, 0, tzinfo=FUSO), diario=True)
+    respostas, _, _ = simular_mudar(["1", "todo", "dia", "10"], banco)
+    assert respostas == [
+        "✏️ Lembrete #1 agora é todo mês, no dia 10, às 09:00: remédio"
+        "\nSe queria todo dia às 10h, use /mudar 1 todo dia 10:00"
+    ]
+
+
+def test_mudar_para_uma_data_sem_horario_usa_9h(banco):
+    banco.adicionar(42, "ligar", AGORA + timedelta(hours=1))
+    simular_mudar(["1", "25/12"], banco)
+    assert banco.todos()[0].quando == datetime(2026, 12, 25, 9, 0, tzinfo=FUSO)
+
+
+def test_mudar_numero_que_nao_existe(banco):
+    respostas, _, _ = simular_mudar(["9", "20:00"], banco)
+    assert respostas == ["⚠️ Não achei o lembrete #9. Veja os seus em /lembretes"]
 
 
 def test_lista_mostra_os_semanais(banco):

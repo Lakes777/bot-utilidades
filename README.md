@@ -25,6 +25,7 @@
 | `/lembrar dias úteis 7:00 acordar` | De segunda a sexta (também `fim de semana`) |
 | `/lembrar quinta 19:00 dentista` | Sem "toda", vale uma vez só: a próxima quinta |
 | `/lembretes` | Lista os lembretes pendentes, com número |
+| `/mudar 3 20:00` | Muda o horário do lembrete 3; se ele repete, continua repetindo. Também `/mudar 3 25/12 9:00`, `/mudar 3 toda sexta 18:00` |
 | `/cancelar 3` | Cancela o lembrete de número 3 (só os do próprio chat) |
 | `/alerta bitcoin acima 400000` | Avisa quando o preço chegar ao valor (também `dolar abaixo 5,20`); confere a cada 5 minutos e avisa uma vez só |
 | `/alertas` | Lista os alertas de preço, com número |
@@ -123,7 +124,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 414 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 446 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -177,7 +178,7 @@ bot-utilidades/
 - [x] Botões no lembrete: adiar 10 min, adiar 1 h e feito
 - [x] Lembretes em dias úteis e em vários dias (`seg e qua`)
 - [x] Lembrete mensal (`todo dia 10 9:00 ...`)
-- [ ] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)
+- [x] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)
 - [ ] Aviso de chuva de manhã
 - [ ] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)
 - [ ] Conversor de moedas (`/converter 100 usd`)

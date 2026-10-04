@@ -1,7 +1,7 @@
 """Monta o bot: liga cada comando do Telegram à função que responde."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import httpx
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -36,6 +36,7 @@ COMANDOS = [
         "lembrar", "lembrete, ex.: /lembrar 10m, 18:30, 25/12 9:00, todo dia 8:00, toda seg e qua 19:00"
     ),
     BotCommand("lembretes", "lista seus lembretes pendentes"),
+    BotCommand("mudar", "muda o horário de um lembrete, ex.: /mudar 3 20:00"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
     BotCommand("alerta", "avisa quando o preço chegar, ex.: /alerta bitcoin acima 400000"),
     BotCommand("alertas", "lista seus alertas de preço"),
@@ -214,16 +215,68 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
     if lembrete.repete:
         # Conta a partir de agora, não do horário antigo: se o bot ficou dias
         # desligado, o lembrete sai uma vez só em vez de um por dia (ou semana) perdido.
-        quando = lembrete.quando.astimezone(lembretes.FUSO)
-        if lembrete.dia_do_mes is not None:
-            proxima = lembretes.proxima_vez_no_mes(lembrete.dia_do_mes, quando.time(), hora)
-        elif lembrete.semanal:
-            proxima = lembretes.proxima_vez_nos_dias(lembrete.dias, quando.time(), hora)
-        else:
-            proxima = lembretes.proxima_vez(quando.time(), hora)
-        agendar(context.job_queue, banco.adiar(lembrete.id, proxima))
+        horario = lembrete.quando.astimezone(lembretes.FUSO).time()
+        proxima = proxima_repeticao(lembrete, horario, hora)
+        # se_quando: se o lembrete foi mudado (/mudar) ou cancelado durante o envio,
+        # a mudança vale e este envio não mexe em mais nada.
+        adiado = banco.adiar(lembrete.id, proxima, se_quando=lembrete.quando)
+        if adiado is not None:
+            agendar(context.job_queue, adiado)
     else:
-        banco.remover(lembrete.id)
+        banco.remover(lembrete.id, se_quando=lembrete.quando)
+
+
+def proxima_repeticao(lembrete: Lembrete, horario: time, hora: datetime) -> datetime:
+    """A próxima vez de um lembrete repetido, no horário dado."""
+    if lembrete.dia_do_mes is not None:
+        return lembretes.proxima_vez_no_mes(lembrete.dia_do_mes, horario, hora)
+    if lembrete.semanal:
+        return lembretes.proxima_vez_nos_dias(lembrete.dias, horario, hora)
+    return lembretes.proxima_vez(horario, hora)
+
+
+async def mudar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    banco: Banco = context.bot_data["banco"]
+    chat_id = update.effective_chat.id
+    hora = agora()
+    try:
+        numero, novo = lembretes.interpretar_mudanca(context.args, hora)
+    except lembretes.LembreteError as erro:
+        await update.message.reply_text(f"⚠️ {erro}")
+        return
+
+    antigo = banco.buscar(numero)
+    if antigo is None or antigo.chat_id != chat_id:
+        await update.message.reply_text(f"⚠️ Não achei o lembrete #{numero}. Veja os seus em /lembretes")
+        return
+
+    if isinstance(novo, time):
+        # Só o horário: um repetido continua repetindo; um avulso vai para hoje ou amanhã.
+        quando = proxima_repeticao(antigo, novo, hora) if antigo.repete else lembretes.proxima_vez(novo, hora)
+        lembrete = banco.mudar(
+            numero, chat_id, quando, antigo.diario, antigo.semanal, antigo.dias, antigo.dia_do_mes
+        )
+    else:
+        lembrete = banco.mudar(
+            numero, chat_id, novo.quando, novo.diario, novo.semanal, novo.dias, novo.dia_do_mes
+        )
+    if lembrete is None:  # apagado entre a busca e a mudança
+        await update.message.reply_text(f"⚠️ Não achei o lembrete #{numero}. Veja os seus em /lembretes")
+        return
+
+    for job in context.job_queue.get_jobs_by_name(f"lembrete-{lembrete.id}"):
+        job.schedule_removal()
+    agendar(context.job_queue, lembrete)
+    if lembrete.repete:
+        quando_texto = descrever_quando(lembrete, hora)
+    else:
+        quando_texto = lembretes.data_e_hora(lembrete.quando, hora)
+    avisos = ""
+    if isinstance(novo, lembretes.Pedido):
+        avisos = lembretes.avisos_do_mensal(novo).replace("/mudar N", f"/mudar {lembrete.id}")
+    await update.message.reply_text(
+        f"✏️ Lembrete #{lembrete.id} agora é {quando_texto}: {lembrete.texto}{avisos}"
+    )
 
 
 def botoes_do_lembrete(enviado_id: int) -> InlineKeyboardMarkup:
@@ -528,6 +581,7 @@ def criar_app(
     app.add_handler(CommandHandler("lembrar", lembrar))
     app.add_handler(CommandHandler("lembretes", listar_lembretes))
     app.add_handler(CommandHandler("cancelar", cancelar))
+    app.add_handler(CommandHandler("mudar", mudar))
     app.add_handler(CallbackQueryHandler(responder_botao))
     app.add_handler(CommandHandler("alerta", criar_alerta))
     app.add_handler(CommandHandler("alertas", listar_alertas))
