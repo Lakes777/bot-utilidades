@@ -5,6 +5,7 @@ Não depende do Telegram: só entende o texto e faz as contas de horário.
 Quem salva e agenda é o bot.
 """
 
+import calendar
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -66,6 +67,7 @@ USO = (
     "/lembrar toda quinta 19:00 futebol\n"
     "/lembrar toda seg e qua 7:00 academia\n"
     "/lembrar dias úteis 7:00 acordar\n"
+    "/lembrar todo dia 10 9:00 pagar aluguel\n"
     "Tempos aceitos: 10m, 2h, 1h30m, 1d"
 )
 
@@ -87,6 +89,8 @@ class Pedido:
     diario: bool = False
     semanal: bool = False  # repete toda semana, nos dias de "dias", no mesmo horário
     dias: tuple[int, ...] = ()  # dias da semana (segunda = 0), só nos semanais
+    dia_do_mes: int | None = None  # preenchido só nos mensais ("todo dia 10")
+    sem_horario: bool = False  # o horário não foi digitado e ficou o padrão
     tempo: timedelta | None = None  # preenchido só em "daqui a X" ("10m", "2h"...)
 
 
@@ -282,16 +286,52 @@ def separar_virgulas(palavras: list[str]) -> list[str]:
     return resultado
 
 
+def proxima_vez_no_mes(dia: int, horario: time, agora: datetime) -> datetime:
+    """A próxima vez do dia do mês naquele horário; nos meses curtos, o último dia."""
+    agora = agora.astimezone(FUSO)
+    ano, mes = agora.year, agora.month
+    while True:
+        ultimo = calendar.monthrange(ano, mes)[1]
+        momento = datetime.combine(date(ano, mes, min(dia, ultimo)), horario, tzinfo=FUSO)
+        if momento > agora:
+            return momento
+        ano, mes = (ano + 1, 1) if mes == 12 else (ano, mes + 1)
+
+
+def ler_mensal(palavras: list[str]) -> tuple[int, list[str]] | None:
+    """["todo", "dia", "10", ...] ou ["todo", "mês", "no", "dia", "10", ...] -> (10, resto)."""
+    palavra = [sem_acento(p).rstrip(",") for p in palavras]
+    if palavra[:2] == ["todo", "mes"]:
+        i = 3 if palavra[2:3] == ["no"] else 2
+        if palavra[i : i + 1] != ["dia"]:
+            return None
+        i += 1
+    elif palavra[:2] == ["todo", "dia"]:
+        i = 2
+    else:
+        return None
+    if i >= len(palavras) or not palavras[i].isdecimal():
+        return None  # "todo dia 8:00" é o diário
+    dia = int(palavras[i])
+    if not 1 <= dia <= 31:
+        raise LembreteError(f"O dia do mês vai de 1 a 31, não {dia}.")
+    return dia, palavras[i + 1 :]
+
+
 def interpretar(palavras: list[str], agora: datetime) -> Pedido:
     """["10m", "tomar", "água"] -> Pedido(quando=agora + 10 minutos, texto="tomar água").
 
     Também entende ["18:30", ...] (horário fixo), ["25/12", "9:00", ...] (data, com
     horário opcional, também "25/12 às 9:00"), ["todo", "dia", "8:00", ...] (diário)
-    e ["toda", "quinta", "19:00", ...] (semanal).
+    ["toda", "quinta", "19:00", ...] (semanal) e ["todo", "dia", "10", "9:00", ...] (mensal).
     """
     lidos = ler_dias(palavras)
     if lidos is not None:
         return interpretar_semanal(*lidos, agora)
+
+    mensal = ler_mensal(palavras)
+    if mensal is not None:
+        return interpretar_mensal(*mensal, agora)
 
     diario = [p.lower() for p in palavras[:2]] == ["todo", "dia"]
     if diario:
@@ -357,6 +397,27 @@ def interpretar_semanal(
     return Pedido(quando, ler_texto(palavras[1:]), semanal=True, dias=dias)
 
 
+def interpretar_mensal(dia: int, palavras: list[str], agora: datetime) -> Pedido:
+    """dia=10, ["9:00", "aluguel"], ["às", "9:00", "aluguel"] ou ["aluguel"] (às 9:00)."""
+    if palavras and sem_acento(palavras[0]) == "as":
+        if len(palavras) < 3:
+            raise LembreteError(USO)
+        horario = ler_horario(palavras[1])
+        palavras = palavras[2:]
+    elif palavras and FORMATO_HORARIO.match(palavras[0]):
+        horario = ler_horario(palavras[0])
+        palavras = palavras[1:]
+    elif palavras and PARECE_HORARIO.match(palavras[0]):
+        # "todo dia 10 20h aluguel" viraria 9:00 com o texto "20h aluguel".
+        raise LembreteError(f'Escreva o horário com dois-pontos: 20:30 em vez de "{palavras[0]}".')
+    else:
+        horario = None
+    if not palavras:
+        raise LembreteError(USO)
+    quando = proxima_vez_no_mes(dia, horario or HORARIO_PADRAO, agora)
+    return Pedido(quando, ler_texto(palavras), dia_do_mes=dia, sem_horario=horario is None)
+
+
 def ler_texto(palavras: list[str]) -> str:
     texto = " ".join(palavras)
     if len(texto) > TAMANHO_MAXIMO:
@@ -375,9 +436,22 @@ def confirmar(pedido: Pedido, agora: datetime) -> str:
     else:
         dia = None
 
+    formato = "%d/%m" if quando.year == hoje.year else "%d/%m/%Y"
+    primeiro = dia or f"em {quando:{formato}}"
+    if pedido.dia_do_mes is not None:
+        aviso = ""
+        if pedido.dia_do_mes > 28:
+            aviso += f"\nNos meses sem dia {pedido.dia_do_mes}, vem no último dia do mês."
+        if pedido.sem_horario and pedido.dia_do_mes <= 23:
+            aviso += (
+                f"\nSe queria todo dia às {pedido.dia_do_mes}h, use "
+                f"/lembrar todo dia {pedido.dia_do_mes}:00 {pedido.texto}"
+            )
+        return (
+            f"✅ Combinado! Todo mês, no dia {pedido.dia_do_mes}, às {quando:%H:%M}, "
+            f"eu te lembro: {pedido.texto}\nO primeiro é {primeiro}.{aviso}"
+        )
     if pedido.semanal:
-        formato = "%d/%m" if quando.year == hoje.year else "%d/%m/%Y"
-        primeiro = dia or f"em {quando:{formato}}"
         return (
             f"✅ Combinado! {toda_semana(pedido.dias).capitalize()} às {quando:%H:%M} "
             f"eu te lembro: {pedido.texto}\nO primeiro é {primeiro}."

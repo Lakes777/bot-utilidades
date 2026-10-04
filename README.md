@@ -19,6 +19,7 @@
 | `/lembrar 18:30 ligar pra mãe` | Lembrete num horário fixo: hoje, ou amanhã se o horário já passou |
 | `/lembrar 25/12 20:30 ceia` | Lembrete numa data (`25/12`, `25/12/2027`, também `25/12 às 20:30`); sem horário, às 9:00 |
 | `/lembrar todo dia 8:00 remédio` | Lembrete repetido todo dia no mesmo horário |
+| `/lembrar todo dia 10 9:00 aluguel` | Todo mês no mesmo dia (sem horário, às 9:00); no dia 31, os meses curtos usam o último dia |
 | `/lembrar toda quinta 19:00 futebol` | Lembrete repetido toda semana no mesmo dia e horário (`toda segunda`, `todos os sábados`, `quinta-feira`, `qui`...); o horário é obrigatório |
 | `/lembrar toda seg e qua 7:00 academia` | Vários dias da semana: `toda segunda, quarta e sexta`, `toda seg a sex` |
 | `/lembrar dias úteis 7:00 acordar` | De segunda a sexta (também `fim de semana`) |
@@ -122,7 +123,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 376 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 414 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -175,7 +176,7 @@ bot-utilidades/
 - [x] Lembretes semanais num dia da semana e horário escolhidos (`/lembrar toda quinta 19:00 ...`)
 - [x] Botões no lembrete: adiar 10 min, adiar 1 h e feito
 - [x] Lembretes em dias úteis e em vários dias (`seg e qua`)
-- [ ] Lembrete mensal (`todo dia 10 9:00 ...`)
+- [x] Lembrete mensal (`todo dia 10 9:00 ...`)
 - [ ] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)
 - [ ] Aviso de chuva de manhã
 - [ ] Lista de compras e tarefas (`/add`, `/lista`, `/feito`)

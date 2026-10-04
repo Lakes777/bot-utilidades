@@ -435,6 +435,58 @@ def test_semanal_de_varios_dias_vai_para_o_proximo_da_lista(banco, monkeypatch):
     assert banco.buscar(lembrete.id).quando == datetime(2026, 9, 30, 19, 0, tzinfo=FUSO)
 
 
+def test_lembrar_todo_dia_10(banco):
+    _, respostas = simular_lembrar(["todo", "dia", "10", "9:00", "aluguel"], banco)
+    [lembrete] = banco.todos()
+    assert lembrete.dia_do_mes == 10
+    assert lembrete.quando == datetime(2026, 10, 10, 9, 0, tzinfo=FUSO)
+    assert respostas[0].startswith("✅ Combinado! Todo mês, no dia 10, às 09:00")
+
+
+def test_mensal_e_reagendado_para_o_mes_que_vem(banco, monkeypatch):
+    dia_10 = datetime(2026, 10, 10, 9, 0, tzinfo=FUSO)
+    lembrete = banco.adicionar(42, "aluguel", dia_10, dia_do_mes=10)
+    monkeypatch.setattr(bot, "agora", lambda: dia_10)
+
+    [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id)
+
+    assert mensagem == "⏰ Lembrete: aluguel\n(todo mês, no dia 10; para parar: /cancelar 1)"
+    assert banco.buscar(lembrete.id).quando == datetime(2026, 11, 10, 9, 0, tzinfo=FUSO)
+
+
+def test_mensal_do_dia_31_volta_ao_31_depois_de_um_mes_curto(banco, monkeypatch):
+    # Saiu em 30/09 (setembro não tem 31): o próximo é 31/10, não 30/10.
+    trinta = datetime(2026, 9, 30, 9, 0, tzinfo=FUSO)
+    lembrete = banco.adicionar(42, "fatura", trinta, dia_do_mes=31)
+    monkeypatch.setattr(bot, "agora", lambda: trinta)
+    simular_envio(banco, lembrete.id)
+    assert banco.buscar(lembrete.id).quando == datetime(2026, 10, 31, 9, 0, tzinfo=FUSO)
+
+
+def test_mensal_com_o_bot_desligado_por_meses_sai_uma_vez(banco, monkeypatch):
+    lembrete = banco.adicionar(42, "aluguel", datetime(2026, 10, 10, 9, 0, tzinfo=FUSO), dia_do_mes=10)
+    monkeypatch.setattr(bot, "agora", lambda: datetime(2026, 12, 15, 12, 0, tzinfo=FUSO))
+
+    [(_, (_, mensagem), _)] = simular_envio(banco, lembrete.id)
+
+    assert mensagem.startswith("⏰ Lembrete atrasado (era para 10/10 às 09:00): aluguel")
+    assert banco.buscar(lembrete.id).quando == datetime(2027, 1, 10, 9, 0, tzinfo=FUSO)
+
+
+def test_mensal_do_dia_31_em_fevereiro(banco, monkeypatch):
+    janeiro = datetime(2027, 1, 31, 9, 0, tzinfo=FUSO)
+    lembrete = banco.adicionar(42, "fatura", janeiro, dia_do_mes=31)
+    monkeypatch.setattr(bot, "agora", lambda: janeiro)
+    simular_envio(banco, lembrete.id)
+    assert banco.buscar(lembrete.id).quando == datetime(2027, 2, 28, 9, 0, tzinfo=FUSO)
+
+
+def test_lista_mostra_os_mensais(banco):
+    banco.adicionar(42, "aluguel", datetime(2026, 10, 10, 9, 0, tzinfo=FUSO), dia_do_mes=10)
+    [resposta] = simular_comando(listar_lembretes, [], banco)
+    assert "#1 todo mês, no dia 10, às 09:00: aluguel" in resposta
+
+
 def test_lista_mostra_os_semanais(banco):
     banco.adicionar(42, "futebol", datetime(2026, 10, 1, 19, 0, tzinfo=FUSO), semanal=True)
     banco.adicionar(42, "feira", datetime(2026, 10, 3, 9, 30, tzinfo=FUSO), semanal=True)

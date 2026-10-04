@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS lembretes (
     quando  TEXT    NOT NULL,  -- data e hora em UTC, no FORMATO_DATA (a próxima, se for diário)
     diario  INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1)),  -- 1 = repete todo dia
     semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1)),  -- 1 = repete toda semana
-    dias    TEXT  -- dias da semana dos semanais, ex.: "0,2" (segunda = 0)
+    dias    TEXT,  -- dias da semana dos semanais, ex.: "0,2" (segunda = 0)
+    dia_do_mes INTEGER CHECK (dia_do_mes BETWEEN 1 AND 31)  -- só nos mensais
 )
 """
 
@@ -38,6 +39,8 @@ COLUNAS_NOVAS = {
     "semanal": "ALTER TABLE lembretes ADD COLUMN semanal INTEGER NOT NULL DEFAULT 0"
     " CHECK (semanal IN (0, 1))",
     "dias": "ALTER TABLE lembretes ADD COLUMN dias TEXT",
+    "dia_do_mes": "ALTER TABLE lembretes ADD COLUMN dia_do_mes INTEGER"
+    " CHECK (dia_do_mes BETWEEN 1 AND 31)",
 }
 
 
@@ -92,6 +95,11 @@ class Lembrete:
     diario: bool = False
     semanal: bool = False
     dias: tuple[int, ...] = ()  # dias da semana dos semanais (segunda = 0)
+    dia_do_mes: int | None = None  # só nos mensais
+
+    @property
+    def repete(self) -> bool:
+        return self.diario or self.semanal or self.dia_do_mes is not None
 
 
 def para_texto(momento: datetime) -> str:
@@ -137,6 +145,7 @@ class Banco:
             bool(linha["diario"]),
             bool(linha["semanal"]),
             dias,
+            linha["dia_do_mes"],
         )
 
     def adicionar(
@@ -147,11 +156,12 @@ class Banco:
         diario: bool = False,
         semanal: bool = False,
         dias: tuple[int, ...] = (),
+        dia_do_mes: int | None = None,
     ) -> Lembrete:
         with self._conectar() as conexao:
             cursor = conexao.execute(
-                "INSERT INTO lembretes (chat_id, texto, quando, diario, semanal, dias)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO lembretes (chat_id, texto, quando, diario, semanal, dias, dia_do_mes)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     chat_id,
                     texto,
@@ -159,6 +169,7 @@ class Banco:
                     int(diario),
                     int(semanal),
                     ",".join(str(dia) for dia in dias) or None,
+                    dia_do_mes,
                 ),
             )
         return self.buscar(cursor.lastrowid)

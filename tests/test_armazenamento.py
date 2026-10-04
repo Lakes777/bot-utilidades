@@ -124,6 +124,15 @@ def test_semanal_sem_dias_usa_o_dia_da_data(tmp_path):
     assert banco.adicionar(1, "feira", QUANDO, semanal=True).dias == (6,)
 
 
+def test_guarda_o_dia_do_mes(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    mensal = banco.adicionar(1, "aluguel", QUANDO, dia_do_mes=10)
+    assert Banco(tmp_path / "lembretes.db").buscar(mensal.id).dia_do_mes == 10
+    assert mensal.repete
+    avulso = banco.adicionar(1, "avulso", QUANDO)
+    assert avulso.dia_do_mes is None and not avulso.repete
+
+
 def test_banco_do_servidor_com_semanal_e_sem_dias(tmp_path):
     # Formato do banco da Oracle depois de 04/10: tem "semanal", ainda não tem "dias".
     caminho = tmp_path / "lembretes.db"
@@ -141,7 +150,28 @@ def test_banco_do_servidor_com_semanal_e_sem_dias(tmp_path):
         )
 
     [antigo] = Banco(caminho).todos()
-    assert antigo.semanal and antigo.dias == (3,)
+    assert antigo.semanal and antigo.dias == (3,) and antigo.dia_do_mes is None
+
+
+def test_banco_do_servidor_com_dias_e_sem_dia_do_mes(tmp_path):
+    # Formato do banco da Oracle depois do commit dos vários dias.
+    caminho = tmp_path / "lembretes.db"
+    with closing(sqlite3.connect(caminho)) as conexao, conexao:
+        conexao.execute(
+            "CREATE TABLE lembretes (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,"
+            " texto TEXT NOT NULL, quando TEXT NOT NULL,"
+            " diario INTEGER NOT NULL DEFAULT 0 CHECK (diario IN (0, 1)),"
+            " semanal INTEGER NOT NULL DEFAULT 0 CHECK (semanal IN (0, 1)), dias TEXT)"
+        )
+        conexao.execute(
+            "INSERT INTO lembretes (chat_id, texto, quando, semanal, dias)"
+            " VALUES (42, 'academia', '2026-09-28 10:00:00', 1, '0,2')"
+        )
+
+    banco = Banco(caminho)
+    [antigo] = banco.todos()
+    assert antigo.dias == (0, 2) and antigo.dia_do_mes is None
+    assert banco.buscar(banco.adicionar(42, "aluguel", QUANDO, dia_do_mes=10).id).dia_do_mes == 10
 
 
 def test_acrescenta_a_coluna_semanal_num_banco_antigo(tmp_path):

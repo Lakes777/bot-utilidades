@@ -19,6 +19,7 @@ from bot_utilidades.lembretes import (
     ler_tempo,
     proxima_vez,
     proxima_vez_no_dia,
+    proxima_vez_no_mes,
     toda_semana,
 )
 
@@ -459,6 +460,106 @@ def test_todo_dia_continua_diario():
     ],
 )
 def test_confirmacao_de_varios_dias(palavras, esperado):
+    assert confirmar(interpretar(palavras, AGORA), AGORA) == esperado
+
+
+@pytest.mark.parametrize(
+    ("dia", "horario", "agora", "esperado"),
+    [
+        (10, time(9, 0), AGORA, datetime(2026, 10, 10, 9, 0, tzinfo=FUSO)),  # já passou em setembro
+        (30, time(9, 0), AGORA, datetime(2026, 9, 30, 9, 0, tzinfo=FUSO)),  # ainda este mês
+        (27, time(18, 0), AGORA, datetime(2026, 9, 27, 18, 0, tzinfo=FUSO)),  # hoje, mais tarde
+        (27, time(10, 0), AGORA, datetime(2026, 10, 27, 10, 0, tzinfo=FUSO)),  # é agora: mês que vem
+        (31, time(9, 0), AGORA, datetime(2026, 9, 30, 9, 0, tzinfo=FUSO)),  # setembro tem 30
+        (31, time(9, 0), datetime(2027, 2, 1, tzinfo=FUSO), datetime(2027, 2, 28, 9, 0, tzinfo=FUSO)),
+        (29, time(9, 0), datetime(2028, 2, 1, tzinfo=FUSO), datetime(2028, 2, 29, 9, 0, tzinfo=FUSO)),
+        (5, time(9, 0), datetime(2026, 12, 20, tzinfo=FUSO), datetime(2027, 1, 5, 9, 0, tzinfo=FUSO)),
+    ],
+)
+def test_proxima_vez_no_mes(dia, horario, agora, esperado):
+    assert proxima_vez_no_mes(dia, horario, agora) == esperado
+
+
+def test_proxima_vez_no_mes_usa_o_relogio_de_brasilia():
+    # 01:00 em UTC de 01/10 ainda é 22:00 de 30/09 em Brasília.
+    agora_utc = datetime(2026, 10, 1, 1, 0, tzinfo=timezone.utc)
+    assert proxima_vez_no_mes(30, time(23, 0), agora_utc) == datetime(2026, 9, 30, 23, 0, tzinfo=FUSO)
+
+
+@pytest.mark.parametrize(
+    "palavras",
+    [
+        ["todo", "dia", "10", "9:00", "pagar", "aluguel"],
+        ["Todo", "Dia", "10", "às", "9:00", "pagar", "aluguel"],
+        ["todo", "mês", "dia", "10", "9:00", "pagar", "aluguel"],
+        ["todo", "mes", "no", "dia", "10", "9:00", "pagar", "aluguel"],
+    ],
+)
+def test_interpreta_mensal(palavras):
+    assert interpretar(palavras, AGORA) == Pedido(
+        datetime(2026, 10, 10, 9, 0, tzinfo=FUSO), "pagar aluguel", dia_do_mes=10
+    )
+
+
+def test_mensal_sem_horario_usa_9h():
+    assert interpretar(["todo", "dia", "5", "fatura"], AGORA) == Pedido(
+        datetime(2026, 10, 5, 9, 0, tzinfo=FUSO), "fatura", dia_do_mes=5, sem_horario=True
+    )
+
+
+def test_mensal_com_horario_sem_dois_pontos_e_erro():
+    with pytest.raises(LembreteError, match="dois-pontos"):
+        interpretar(["todo", "dia", "10", "20h", "aluguel"], AGORA)
+
+
+def test_todo_mes_com_virgula():
+    assert interpretar(["todo", "mês,", "dia", "10", "9:00", "x"], AGORA).dia_do_mes == 10
+
+
+@pytest.mark.parametrize("dia", ["0", "32", "99"])
+def test_mensal_com_dia_que_nao_existe(dia):
+    with pytest.raises(LembreteError, match="vai de 1 a 31"):
+        interpretar(["todo", "dia", dia, "9:00", "x"], AGORA)
+
+
+@pytest.mark.parametrize(
+    "palavras",
+    [["todo", "dia", "10"], ["todo", "dia", "10", "9:00"], ["todo", "dia", "10", "às"],
+     ["todo", "dia", "10", "às", "9:00"]],
+)
+def test_mensal_sem_texto_mostra_como_usar(palavras):
+    with pytest.raises(LembreteError, match="Use assim"):
+        interpretar(palavras, AGORA)
+
+
+def test_todo_mes_sem_dia_nao_e_mensal():
+    with pytest.raises(LembreteError, match="Não entendi o tempo"):
+        interpretar(["todo", "mês", "pagar", "aluguel"], AGORA)
+
+
+def test_todo_dia_com_horario_continua_diario():
+    pedido = interpretar(["todo", "dia", "8:00", "remédio"], AGORA)
+    assert pedido.diario and pedido.dia_do_mes is None
+
+
+@pytest.mark.parametrize(
+    ("palavras", "esperado"),
+    [
+        (["todo", "dia", "10", "9:00", "aluguel"],
+         "✅ Combinado! Todo mês, no dia 10, às 09:00, eu te lembro: aluguel\nO primeiro é em 10/10."),
+        (["todo", "dia", "28", "9:00", "fatura"],
+         "✅ Combinado! Todo mês, no dia 28, às 09:00, eu te lembro: fatura\nO primeiro é amanhã."),
+        (["todo", "dia", "31", "9:00", "fatura"],
+         "✅ Combinado! Todo mês, no dia 31, às 09:00, eu te lembro: fatura\nO primeiro é em 30/09."
+         "\nNos meses sem dia 31, vem no último dia do mês."),
+        (["todo", "dia", "8", "remédio"],
+         "✅ Combinado! Todo mês, no dia 8, às 09:00, eu te lembro: remédio\nO primeiro é em 08/10."
+         "\nSe queria todo dia às 8h, use /lembrar todo dia 8:00 remédio"),
+        (["todo", "mês", "dia", "25", "salário"],
+         "✅ Combinado! Todo mês, no dia 25, às 09:00, eu te lembro: salário\nO primeiro é em 25/10."),
+    ],
+)
+def test_confirmacao_do_mensal(palavras, esperado):
     assert confirmar(interpretar(palavras, AGORA), AGORA) == esperado
 
 

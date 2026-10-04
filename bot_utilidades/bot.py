@@ -171,6 +171,7 @@ async def lembrar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         diario=pedido.diario,
         semanal=pedido.semanal,
         dias=pedido.dias,
+        dia_do_mes=pedido.dia_do_mes,
     )
     agendar(context.job_queue, lembrete)
     await update.message.reply_text(lembretes.confirmar(pedido, hora))
@@ -189,7 +190,7 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         mensagem = f"⏰ Lembrete: {lembrete.texto}"
 
-    if lembrete.diario or lembrete.semanal:
+    if lembrete.repete:
         mensagem += f"\n({repeticao(lembrete)}; para parar: /cancelar {lembrete.id})"
 
     # Registra antes de enviar, porque o número vai dentro dos botões.
@@ -210,11 +211,13 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Só mexe no banco depois de enviar: se a internet cair no envio, o erro sobe,
     # o lembrete continua como estava e sai quando o bot for reiniciado.
-    if lembrete.diario or lembrete.semanal:
+    if lembrete.repete:
         # Conta a partir de agora, não do horário antigo: se o bot ficou dias
         # desligado, o lembrete sai uma vez só em vez de um por dia (ou semana) perdido.
         quando = lembrete.quando.astimezone(lembretes.FUSO)
-        if lembrete.semanal:
+        if lembrete.dia_do_mes is not None:
+            proxima = lembretes.proxima_vez_no_mes(lembrete.dia_do_mes, quando.time(), hora)
+        elif lembrete.semanal:
             proxima = lembretes.proxima_vez_nos_dias(lembrete.dias, quando.time(), hora)
         else:
             proxima = lembretes.proxima_vez(quando.time(), hora)
@@ -296,15 +299,19 @@ async def editar_mensagem(consulta, nota: str | None) -> None:
 
 
 def repeticao(lembrete: Lembrete) -> str:
-    """"todo dia" ou "toda quinta", conforme o lembrete repetido."""
+    """"todo dia", "toda quinta" ou "todo dia 10", conforme o lembrete repetido."""
+    if lembrete.dia_do_mes is not None:
+        return f"todo mês, no dia {lembrete.dia_do_mes}"
     if lembrete.semanal:
         return lembretes.toda_semana(lembrete.dias)
     return "todo dia"
 
 
 def descrever_quando(lembrete: Lembrete, hora: datetime) -> str:
-    if lembrete.diario or lembrete.semanal:
-        return f"{repeticao(lembrete)} às {lembrete.quando.astimezone(lembretes.FUSO):%H:%M}"
+    if lembrete.repete:
+        virgula = "," if lembrete.dia_do_mes is not None else ""  # "todo mês, no dia 10, às 9:00"
+        horario = lembrete.quando.astimezone(lembretes.FUSO)
+        return f"{repeticao(lembrete)}{virgula} às {horario:%H:%M}"
     return lembretes.descrever_horario(lembrete.quando, hora)
 
 
