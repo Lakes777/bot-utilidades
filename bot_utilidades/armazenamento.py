@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -47,6 +47,28 @@ CREATE TABLE IF NOT EXISTS alertas (
 """
 
 
+CRIAR_TABELA_ENVIADOS = """
+CREATE TABLE IF NOT EXISTS enviados (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    texto      TEXT    NOT NULL,
+    enviado_em TEXT    NOT NULL  -- UTC, no FORMATO_DATA
+)
+"""
+
+# Os botões de um lembrete enviado funcionam por este tempo; depois o registro é apagado.
+VALIDADE_DOS_BOTOES = timedelta(days=7)
+
+
+@dataclass(frozen=True)
+class Enviado:
+    """Um lembrete já entregue, guardado só para os botões "Adiar" saberem o texto."""
+
+    id: int
+    chat_id: int
+    texto: str
+
+
 @dataclass(frozen=True)
 class Alerta:
     id: int
@@ -81,6 +103,7 @@ class Banco:
         with self._conectar() as conexao:
             conexao.execute(CRIAR_TABELA)
             conexao.execute(CRIAR_TABELA_ALERTAS)
+            conexao.execute(CRIAR_TABELA_ENVIADOS)
             colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(lembretes)")}
             if "semanal" not in colunas:
                 conexao.execute(ACRESCENTAR_SEMANAL)
@@ -168,6 +191,48 @@ class Banco:
                 return None
             conexao.execute("DELETE FROM lembretes WHERE id = ?", (id,))
         return self._lembrete(linha)
+
+    # ---------- Lembretes enviados (para os botões) ----------
+
+    def registrar_envio(self, chat_id: int, texto: str, agora: datetime) -> Enviado:
+        """Guarda o lembrete que vai ser enviado e apaga os registros vencidos."""
+        with self._conectar() as conexao:
+            conexao.execute(
+                "DELETE FROM enviados WHERE enviado_em < ?",
+                (para_texto(agora - VALIDADE_DOS_BOTOES),),
+            )
+            cursor = conexao.execute(
+                "INSERT INTO enviados (chat_id, texto, enviado_em) VALUES (?, ?, ?)",
+                (chat_id, texto, para_texto(agora)),
+            )
+        return Enviado(cursor.lastrowid, chat_id, texto)
+
+    def buscar_envio(self, id: int, chat_id: int) -> Enviado | None:
+        with self._conectar() as conexao:
+            linha = conexao.execute(
+                "SELECT * FROM enviados WHERE id = ? AND chat_id = ?", (id, chat_id)
+            ).fetchone()
+        return Enviado(linha["id"], linha["chat_id"], linha["texto"]) if linha else None
+
+    def tirar_envio(self, id: int, chat_id: int) -> Enviado | None:
+        """Apaga e devolve o registro, só se for deste chat (cada botão vale uma vez).
+
+        Um DELETE só, conferido pelo rowcount: se dois cliques chegarem juntos,
+        apenas um consegue apagar.
+        """
+        enviado = self.buscar_envio(id, chat_id)
+        if enviado is None:
+            return None
+        with self._conectar() as conexao:
+            cursor = conexao.execute(
+                "DELETE FROM enviados WHERE id = ? AND chat_id = ?", (id, chat_id)
+            )
+        return enviado if cursor.rowcount > 0 else None
+
+    def esquecer_envio(self, id: int) -> None:
+        """Apaga o registro sem conferir o chat (usado quando o envio falha)."""
+        with self._conectar() as conexao:
+            conexao.execute("DELETE FROM enviados WHERE id = ?", (id,))
 
     # ---------- Alertas de preço ----------
 

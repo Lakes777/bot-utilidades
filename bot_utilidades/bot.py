@@ -4,11 +4,12 @@ import logging
 from datetime import datetime, timedelta
 
 import httpx
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     JobQueue,
@@ -22,6 +23,9 @@ log = logging.getLogger(__name__)
 
 # Um lembrete entregue com mais atraso que isso ganha um aviso (o bot estava desligado).
 TOLERANCIA_ATRASO = timedelta(minutes=1)
+
+# Botões embaixo de cada lembrete: o que vai no callback_data e quanto adiar.
+ADIAMENTOS = {"adiar10": timedelta(minutes=10), "adiar60": timedelta(hours=1)}
 
 # Aparecem no menu "/" do Telegram e na mensagem de /ajuda.
 COMANDOS = [
@@ -66,7 +70,10 @@ async def porteiro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return  # segue para o comando normalmente
 
     log.info("Usuário %s barrado", usuario.id if usuario else "desconhecido")
-    if update.effective_message and usuario:
+    if update.callback_query:
+        # Clique num botão: sem answer(), o botão fica girando no celular da pessoa.
+        await update.callback_query.answer("🔒 Este bot é particular.")
+    elif update.effective_message and usuario:
         await update.effective_message.reply_text(
             "🔒 Este bot é particular.\n"
             f"Seu ID é {usuario.id}. Se você conhece o dono, mande esse número "
@@ -180,13 +187,21 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
     if lembrete.diario or lembrete.semanal:
         mensagem += f"\n({repeticao(lembrete)}; para parar: /cancelar {lembrete.id})"
 
+    # Registra antes de enviar, porque o número vai dentro dos botões.
+    enviado = banco.registrar_envio(lembrete.chat_id, lembrete.texto, hora)
     try:
-        await context.bot.send_message(lembrete.chat_id, mensagem)
+        await context.bot.send_message(
+            lembrete.chat_id, mensagem, reply_markup=botoes_do_lembrete(enviado.id)
+        )
     except Forbidden:
         # A pessoa bloqueou o bot: não adianta tentar de novo a cada reinício.
         log.warning("Chat %s bloqueou o bot; lembrete %s apagado", lembrete.chat_id, lembrete.id)
+        banco.esquecer_envio(enviado.id)
         banco.remover(lembrete.id)
         return
+    except Exception:
+        banco.esquecer_envio(enviado.id)
+        raise
 
     # Só mexe no banco depois de enviar: se a internet cair no envio, o erro sobe,
     # o lembrete continua como estava e sai quando o bot for reiniciado.
@@ -201,6 +216,78 @@ async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE) -> None:
         agendar(context.job_queue, banco.adiar(lembrete.id, proxima))
     else:
         banco.remover(lembrete.id)
+
+
+def botoes_do_lembrete(enviado_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Adiar 10 min", callback_data=f"adiar10:{enviado_id}"),
+                InlineKeyboardButton("Adiar 1 h", callback_data=f"adiar60:{enviado_id}"),
+                InlineKeyboardButton("Feito", callback_data=f"feito:{enviado_id}"),
+            ]
+        ]
+    )
+
+
+async def responder_botao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clique em "Adiar 10 min", "Adiar 1 h" ou "Feito" embaixo de um lembrete."""
+    consulta = update.callback_query
+    banco: Banco = context.bot_data["banco"]
+    acao, _, numero = (consulta.data or "").partition(":")
+    if (acao not in ADIAMENTOS and acao != "feito") or not numero.isdecimal():
+        await consulta.answer()
+        return
+
+    chat_id = update.effective_chat.id
+    enviado = banco.buscar_envio(int(numero), chat_id)
+    if enviado is None:
+        await consulta.answer("Esse lembrete já foi respondido ou é antigo demais.")
+        await editar_mensagem(consulta, None)
+        return
+    if acao in ADIAMENTOS and banco.contar(chat_id) >= lembretes.LIMITE_POR_CHAT:
+        # O botão continua valendo: dá para tentar de novo depois de um /cancelar.
+        await consulta.answer(
+            f"Você já tem {lembretes.LIMITE_POR_CHAT} lembretes pendentes.", show_alert=True
+        )
+        return
+
+    # Cada botão vale uma vez: se dois cliques chegarem juntos, só um tira o registro.
+    if banco.tirar_envio(enviado.id, chat_id) is None:
+        await consulta.answer("Esse lembrete já foi respondido.")
+        return
+
+    if acao == "feito":
+        await consulta.answer("Feito!")
+        await editar_mensagem(consulta, "✅ Feito")
+        return
+
+    hora = agora()
+    try:
+        novo = banco.adicionar(chat_id, enviado.texto, hora + ADIAMENTOS[acao])
+        agendar(context.job_queue, novo)
+    except Exception:
+        await consulta.answer("Não consegui adiar. Tente /lembrar.")
+        raise
+    quando = lembretes.descrever_horario(novo.quando, hora)
+    await consulta.answer(f"Adiado {quando}")
+    await editar_mensagem(consulta, f"💤 Adiado {quando} (#{novo.id})")
+
+
+async def editar_mensagem(consulta, nota: str | None) -> None:
+    """Tira os botões da mensagem do lembrete e, se houver nota, escreve embaixo.
+
+    A edição é só enfeite: se a mensagem foi apagada ou já está sem botões
+    (dois cliques rápidos), o Telegram recusa e o bot só registra no log.
+    """
+    mensagem = consulta.message
+    try:
+        if nota is None or not isinstance(getattr(mensagem, "text", None), str):
+            await consulta.edit_message_reply_markup(reply_markup=None)
+        else:
+            await consulta.edit_message_text(f"{mensagem.text}\n{nota}")
+    except (BadRequest, TypeError) as erro:
+        log.info("Não deu para editar a mensagem do lembrete: %s", erro)
 
 
 def repeticao(lembrete: Lembrete) -> str:
@@ -429,6 +516,7 @@ def criar_app(
     app.add_handler(CommandHandler("lembrar", lembrar))
     app.add_handler(CommandHandler("lembretes", listar_lembretes))
     app.add_handler(CommandHandler("cancelar", cancelar))
+    app.add_handler(CallbackQueryHandler(responder_botao))
     app.add_handler(CommandHandler("alerta", criar_alerta))
     app.add_handler(CommandHandler("alertas", listar_alertas))
     app.add_handler(CommandHandler("removeralerta", remover_alerta))

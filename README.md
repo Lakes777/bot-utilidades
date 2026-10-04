@@ -29,6 +29,7 @@
 | `/ajuda` | Lista os comandos |
 
 - **Menu de comandos:** os comandos aparecem como sugestão ao digitar `/` no Telegram
+- **Botões no lembrete:** quando o lembrete toca, dá para tocar em "Adiar 10 min", "Adiar 1 h" ou "Feito" sem digitar nada
 - **Erros explicados:** cidade inexistente, tempo em formato inválido, API fora do ar ou sem internet geram uma mensagem clara em vez de travar o bot
 - **Lembretes que não se perdem:** ficam salvos num banco SQLite (`dados/lembretes.db`). Se o bot for desligado, ao voltar ele reagenda tudo e manda na hora os que venceram enquanto estava fora, avisando o horário original
 - **Alertas que sobrevivem a reinicializações:** ficam no mesmo banco SQLite; se o preço já passou do valor na hora de criar, o bot avisa em vez de criar um alerta que dispararia na hora
@@ -118,7 +119,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 316 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 339 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, dias da semana, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -148,6 +149,7 @@ bot-utilidades/
 - **Banco como fonte da verdade, `JobQueue` só como despertador:** cada lembrete é salvo no SQLite e o agendador guarda só o número dele. Na hora de enviar, o texto é lido do banco; um lembrete cancelado no meio do caminho simplesmente não é achado. O lembrete só é apagado **depois** que o Telegram confirma o envio: se a internet cair, ele continua salvo e sai quando o bot voltar. Datas ficam em UTC, sempre no mesmo formato de texto, para a ordem alfabética ser a cronológica.
 - **Lembrete atrasado não se perde:** por padrão, o agendador (APScheduler) descarta em silêncio um job que dispara com mais de 1 segundo de atraso, o que aconteceria com o PC hibernando ou com lembretes vencidos com o bot desligado. Confirmei isso com o agendador de verdade (um job 3 horas atrasado foi descartado) e desliguei o limite (`misfire_grace_time=None`).
 - **Diário conta a partir de agora:** depois de cada envio, o próximo é marcado para a próxima vez que o relógio chegar ao horário. Se o bot ficou 3 dias desligado, sai uma mensagem só, e não três.
+- **Botões que valem uma vez:** cada lembrete chega com os botões "Adiar 10 min", "Adiar 1 h" e "Feito". O texto do Telegram nos botões tem no máximo 64 bytes, então eles levam só um número; o texto do lembrete fica numa tabela `enviados` por 7 dias. O primeiro clique apaga o registro (filtrando pelo chat), então clicar duas vezes não cria dois lembretes. O limite de lembretes é conferido antes de gastar o botão.
 - **Banco antigo ganha a coluna nova sozinho:** os lembretes semanais precisaram de uma coluna `semanal`. Ao abrir, o bot confere as colunas da tabela (`PRAGMA table_info`) e, se faltar, acrescenta com `ALTER TABLE`, valendo 0 para os lembretes que já existiam. Assim o banco do servidor foi atualizado com um `git pull` e um reinício, sem perder nada. O dia da semana não é guardado à parte: vem da própria data do próximo envio.
 - **"18:30" é horário, "18h" é duração:** só o formato com dois-pontos vira horário fixo, porque `/lembrar 18h ...` já queria dizer "daqui a 18 horas".
 - **Cancelar só o que é seu:** o `/cancelar` filtra pelo chat no próprio SQL, então chutar números não apaga lembretes de outra pessoa. Os números usam `AUTOINCREMENT` para nunca serem reaproveitados.
@@ -168,7 +170,7 @@ bot-utilidades/
 - [x] Hospedar o bot num servidor para ficar online 24 horas (Oracle Cloud, systemd)
 - [x] Lembretes numa data específica (`/lembrar 25/12 9:00 ...`)
 - [x] Lembretes semanais num dia da semana e horário escolhidos (`/lembrar toda quinta 19:00 ...`)
-- [ ] Botões no lembrete: adiar 10 min, adiar 1 h e feito
+- [x] Botões no lembrete: adiar 10 min, adiar 1 h e feito
 - [ ] Lembretes em dias úteis e em vários dias (`seg e qua`)
 - [ ] Lembrete mensal (`todo dia 10 9:00 ...`)
 - [ ] Mudar o horário de um lembrete sem cancelar (`/mudar 3 20:00`)

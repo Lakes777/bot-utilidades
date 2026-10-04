@@ -135,6 +135,26 @@ def test_acrescenta_a_coluna_semanal_num_banco_antigo(tmp_path):
     assert len(Banco(caminho).todos()) == 2
 
 
+def test_envios_registrados_e_tirados(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    enviado = banco.registrar_envio(42, "tomar água", QUANDO)
+
+    assert banco.tirar_envio(enviado.id, 7) is None  # outro chat
+    assert banco.tirar_envio(enviado.id, 42) == enviado
+    assert banco.tirar_envio(enviado.id, 42) is None  # só uma vez
+
+
+def test_envios_antigos_sao_apagados(tmp_path):
+    banco = Banco(tmp_path / "lembretes.db")
+    antigo = banco.registrar_envio(42, "velho", QUANDO)
+    recente = banco.registrar_envio(42, "recente", QUANDO + timedelta(days=6))
+
+    banco.registrar_envio(42, "novo", QUANDO + timedelta(days=7, seconds=1))
+
+    assert banco.tirar_envio(antigo.id, 42) is None
+    assert banco.tirar_envio(recente.id, 42) == recente
+
+
 def test_adiar(tmp_path):
     banco = Banco(tmp_path / "lembretes.db")
     diario = banco.adicionar(1, "remédio", QUANDO, diario=True)

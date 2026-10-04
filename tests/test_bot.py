@@ -5,8 +5,9 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from telegram import Bot, Message, Update, User
+from telegram import Bot, CallbackQuery, Message, Update, User
 from telegram.error import BadRequest, Forbidden
+from telegram.ext import CallbackQueryHandler, CommandHandler
 
 from bot_utilidades import bot, cotacoes
 from bot_utilidades.armazenamento import Banco
@@ -22,6 +23,7 @@ from bot_utilidades.bot import (
     listar_lembretes,
     reagendar,
     remover_alerta,
+    responder_botao,
 )
 from bot_utilidades.alertas import LIMITE_POR_CHAT as LIMITE_ALERTAS
 from bot_utilidades.lembretes import FUSO, LIMITE_POR_CHAT
@@ -42,7 +44,12 @@ def relogio_parado(monkeypatch):
 
 
 def comandos_registrados(app) -> set[str]:
-    return {comando for handler in app.handlers[0] for comando in handler.commands}
+    return {
+        comando
+        for handler in app.handlers[0]
+        if isinstance(handler, CommandHandler)
+        for comando in handler.commands
+    }
 
 
 def test_lembrar_numa_data(banco):
@@ -177,9 +184,13 @@ def simular_envio(banco, lembrete_id, erro=None, agendados=None):
 
 def test_enviar_lembrete_manda_para_o_chat_certo_e_apaga(banco):
     lembrete = banco.adicionar(42, "tomar água", AGORA)
-    chamadas = simular_envio(banco, lembrete.id)
-    assert chamadas == [("send_message", (42, "⏰ Lembrete: tomar água"), {})]
+    [(nome, args, kwargs)] = simular_envio(banco, lembrete.id)
+    assert (nome, args) == ("send_message", (42, "⏰ Lembrete: tomar água"))
     assert banco.todos() == []
+    botoes = kwargs["reply_markup"].inline_keyboard[0]
+    assert [(b.text, b.callback_data) for b in botoes] == [
+        ("Adiar 10 min", "adiar10:1"), ("Adiar 1 h", "adiar60:1"), ("Feito", "feito:1")
+    ]
 
 
 def test_lembrete_atrasado_avisa_o_horario_original(banco):
@@ -409,6 +420,158 @@ def test_lista_mostra_os_semanais(banco):
     assert "#2 todo sábado às 09:30: feira" in resposta
 
 
+def simular_botao(dados, banco, chat_id=42, texto="⏰ Lembrete: tomar água", erro_ao_editar=None):
+    """Simula o clique num botão; devolve as chamadas feitas e os jobs agendados."""
+    falso = Falso()
+    agendados = []
+
+    def editar(nome):
+        gravar = falso.gravar(nome)
+
+        async def metodo(*args, **kwargs):
+            await gravar(*args, **kwargs)
+            if erro_ao_editar:
+                raise erro_ao_editar
+        return metodo
+
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=dados,
+            message=SimpleNamespace(text=texto),
+            answer=falso.gravar("answer"),
+            edit_message_text=editar("edit_message_text"),
+            edit_message_reply_markup=editar("edit_message_reply_markup"),
+        ),
+        effective_chat=SimpleNamespace(id=chat_id),
+    )
+    context = SimpleNamespace(
+        bot_data={"banco": banco},
+        job_queue=SimpleNamespace(run_once=lambda *a, **kw: agendados.append(kw)),
+    )
+    asyncio.run(responder_botao(update, context))
+    return falso.chamadas, agendados
+
+
+def test_botao_adiar_10_minutos(banco):
+    enviado = banco.registrar_envio(42, "tomar água", AGORA)
+
+    chamadas, agendados = simular_botao(f"adiar10:{enviado.id}", banco)
+
+    [novo] = banco.todos()
+    assert (novo.chat_id, novo.texto) == (42, "tomar água")
+    assert novo.quando == AGORA + timedelta(minutes=10)
+    assert agendados[0]["when"] == novo.quando
+    assert ("answer", ("Adiado às 10:10",), {}) in chamadas
+    assert (
+        "edit_message_text", ("⏰ Lembrete: tomar água\n💤 Adiado às 10:10 (#1)",), {}
+    ) in chamadas
+
+
+def test_botao_adiar_1_hora(banco):
+    enviado = banco.registrar_envio(42, "reunião", AGORA)
+    simular_botao(f"adiar60:{enviado.id}", banco)
+    [novo] = banco.todos()
+    assert novo.quando == AGORA + timedelta(hours=1)
+
+
+def test_botao_feito(banco):
+    enviado = banco.registrar_envio(42, "tomar água", AGORA)
+
+    chamadas, agendados = simular_botao(f"feito:{enviado.id}", banco)
+
+    assert banco.todos() == [] and agendados == []
+    assert ("edit_message_text", ("⏰ Lembrete: tomar água\n✅ Feito",), {}) in chamadas
+
+
+def test_botao_vale_uma_vez(banco):
+    enviado = banco.registrar_envio(42, "tomar água", AGORA)
+    simular_botao(f"adiar10:{enviado.id}", banco)
+
+    chamadas, _ = simular_botao(f"adiar10:{enviado.id}", banco)
+
+    assert len(banco.todos()) == 1  # o segundo clique não cria outro
+    assert ("answer", ("Esse lembrete já foi respondido ou é antigo demais.",), {}) in chamadas
+    assert ("edit_message_reply_markup", (), {"reply_markup": None}) in chamadas
+
+
+def test_botao_de_outro_chat_nao_funciona(banco):
+    enviado = banco.registrar_envio(42, "tomar água", AGORA)
+    simular_botao(f"adiar10:{enviado.id}", banco, chat_id=7)
+    assert banco.todos() == []
+    assert banco.tirar_envio(enviado.id, 42) is not None  # continua valendo para o dono
+
+
+@pytest.mark.parametrize("dados", ["", "apagar:1", "adiar10:", "adiar10:abc", "feito:-1", None])
+def test_botao_com_dados_estranhos_e_ignorado(banco, dados):
+    banco.registrar_envio(42, "tomar água", AGORA)
+    chamadas, _ = simular_botao(dados, banco)
+    assert chamadas == [("answer", (), {})]
+    assert banco.todos() == []
+
+
+def test_botao_adiar_respeita_o_limite(banco):
+    for i in range(LIMITE_POR_CHAT):
+        banco.adicionar(42, f"lembrete {i}", AGORA + timedelta(days=1))
+    enviado = banco.registrar_envio(42, "tomar água", AGORA)
+
+    chamadas, _ = simular_botao(f"adiar10:{enviado.id}", banco)
+
+    assert banco.contar(42) == LIMITE_POR_CHAT
+    [(nome, args, kwargs)] = chamadas
+    assert nome == "answer" and kwargs == {"show_alert": True}
+    # O botão continua valendo depois de cancelar algum lembrete.
+    banco.cancelar(1, 42)
+    simular_botao(f"adiar10:{enviado.id}", banco)
+    assert banco.contar(42) == LIMITE_POR_CHAT
+
+
+def test_botao_usado_com_limite_cheio_diz_que_ja_foi_respondido(banco):
+    for i in range(LIMITE_POR_CHAT):
+        banco.adicionar(42, f"lembrete {i}", AGORA + timedelta(days=1))
+    chamadas, _ = simular_botao("adiar10:99", banco)
+    assert ("answer", ("Esse lembrete já foi respondido ou é antigo demais.",), {}) in chamadas
+
+
+def test_adiar_um_lembrete_diario_nao_mexe_no_repetido(banco):
+    diario = banco.adicionar(42, "remédio", AGORA + timedelta(days=1), diario=True)
+    enviado = banco.registrar_envio(42, "remédio", AGORA)
+    texto = "⏰ Lembrete: remédio\n(todo dia; para parar: /cancelar 1)"
+
+    chamadas, _ = simular_botao(f"adiar10:{enviado.id}", banco, texto=texto)
+
+    repetido, adiado = sorted(banco.todos(), key=lambda l: l.id)
+    assert repetido == diario
+    assert not adiado.diario and adiado.quando == AGORA + timedelta(minutes=10)
+    assert ("edit_message_text", (texto + "\n💤 Adiado às 10:10 (#2)",), {}) in chamadas
+
+
+@pytest.mark.parametrize("dados", ["feito:1", "adiar10:1", "adiar10:99"])
+def test_edicao_recusada_pelo_telegram_nao_derruba_o_bot(banco, dados):
+    banco.registrar_envio(42, "tomar água", AGORA)
+    erro = BadRequest("Message is not modified")
+    chamadas, _ = simular_botao(dados, banco, erro_ao_editar=erro)
+    assert chamadas[0][0] == "answer"
+
+
+def test_mensagem_inacessivel_so_perde_os_botoes(banco):
+    # Mensagem apagada: o Telegram manda um objeto sem texto.
+    enviado = banco.registrar_envio(42, "tomar água", AGORA)
+    chamadas, _ = simular_botao(f"feito:{enviado.id}", banco, texto=None)
+    assert ("edit_message_reply_markup", (), {"reply_markup": None}) in chamadas
+
+
+def test_envio_que_falha_nao_deixa_registro_para_os_botoes(banco):
+    lembrete = banco.adicionar(42, "tomar água", AGORA)
+    with pytest.raises(OSError):
+        simular_envio(banco, lembrete.id, erro=OSError("sem rede"))
+    assert banco.tirar_envio(1, 42) is None
+
+
+def test_registra_o_handler_dos_botoes(banco):
+    app = criar_app(TOKEN_FALSO, banco)
+    assert any(isinstance(h, CallbackQueryHandler) for h in app.handlers[0])
+
+
 def mensagem_de(usuario_id, texto, update_id=1):
     """Monta um Update igual ao que o Telegram manda quando alguém digita um comando."""
     return {
@@ -465,6 +628,43 @@ def test_permitido_usa_normalmente(banco, respostas_do_bot):
     processar(app, mensagem_de(111, "/ajuda"))
     [(_, texto)] = respostas_do_bot
     assert texto.startswith("Comandos disponíveis")
+
+
+def clique_de(usuario_id, dados, update_id=1):
+    """Monta um Update igual ao que o Telegram manda quando alguém toca num botão."""
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": "clique-1",
+            "chat_instance": "1",
+            "from": {"id": usuario_id, "is_bot": False, "first_name": "Teste"},
+            "data": dados,
+            "message": {
+                "message_id": 5,
+                "date": 0,
+                "chat": {"id": usuario_id, "type": "private"},
+                "from": {"id": 1, "is_bot": True, "first_name": "Bot"},
+                "text": "⏰ Lembrete: tomar água",
+            },
+        },
+    }
+
+
+def test_clique_de_desconhecido_e_respondido_sem_mensagem_nova(banco, respostas_do_bot, monkeypatch):
+    respostas_aos_cliques = []
+
+    async def answer(self, texto=None, *args, **kwargs):
+        respostas_aos_cliques.append(texto)
+
+    monkeypatch.setattr(CallbackQuery, "answer", answer)
+    enviado = banco.registrar_envio(555, "tomar água", AGORA)
+    app = criar_app(TOKEN_FALSO, banco, permitidos=frozenset({111}))
+
+    processar(app, clique_de(555, f"adiar10:{enviado.id}"))
+
+    assert respostas_aos_cliques == ["🔒 Este bot é particular."]
+    assert respostas_do_bot == []  # não manda mensagem no chat
+    assert banco.todos() == []
 
 
 def test_desconhecido_e_barrado(banco, respostas_do_bot):
