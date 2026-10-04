@@ -12,6 +12,7 @@ from bot_utilidades.lembretes import (
     descrever_horario,
     encurtar,
     interpretar,
+    ler_data,
     ler_horario,
     ler_numero,
     ler_tempo,
@@ -145,12 +146,148 @@ def test_todo_dia_no_meio_do_texto_nao_e_diario():
 
 
 @pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        ("25/12", datetime(2026, 12, 25, 9, 0, tzinfo=FUSO)),
+        ("5/1", datetime(2027, 1, 5, 9, 0, tzinfo=FUSO)),  # já passou este ano: o próximo
+        ("28/09", datetime(2026, 9, 28, 9, 0, tzinfo=FUSO)),
+        ("25/12/2027", datetime(2027, 12, 25, 9, 0, tzinfo=FUSO)),
+        ("25/12/27", datetime(2027, 12, 25, 9, 0, tzinfo=FUSO)),
+        ("29/02", datetime(2028, 2, 29, 9, 0, tzinfo=FUSO)),  # próximo ano bissexto
+    ],
+)
+def test_le_datas(texto, esperado):
+    assert ler_data(texto, time(9, 0), AGORA) == esperado
+
+
+def test_data_de_hoje_com_horario_que_ainda_vem():
+    assert ler_data("27/09", time(18, 0), AGORA) == datetime(2026, 9, 27, 18, 0, tzinfo=FUSO)
+
+
+def test_data_de_hoje_sem_horario_depois_das_9h_explica():
+    with pytest.raises(LembreteError, match="Sem horário, o lembrete fica para as 09:00"):
+        ler_data("27/09", None, AGORA)
+
+
+def test_data_sem_horario_usa_9h():
+    assert ler_data("25/12", None, AGORA) == datetime(2026, 12, 25, 9, 0, tzinfo=FUSO)
+
+
+def test_data_de_hoje_com_horario_que_ja_passou_e_engano():
+    # Não vira lembrete para daqui a um ano.
+    with pytest.raises(LembreteError, match="O horário 08:00 de hoje já passou"):
+        ler_data("27/09", time(8, 0), AGORA)
+
+
+@pytest.mark.parametrize("texto", ["31/02", "31/04", "0/5", "25/13", "29/02/2027"])
+def test_recusa_datas_que_nao_existem(texto):
+    with pytest.raises(LembreteError, match="não existe"):
+        ler_data(texto, time(9, 0), AGORA)
+
+
+@pytest.mark.parametrize("texto", ["26/09/2026", "25/12/2025", "1/1/26"])
+def test_recusa_datas_que_ja_passaram(texto):
+    with pytest.raises(LembreteError, match="já passou"):
+        ler_data(texto, time(9, 0), AGORA)
+
+
+def test_data_no_maximo_cinco_anos_a_frente():
+    assert ler_data("31/12/2031", time(9, 0), AGORA).year == 2031
+    with pytest.raises(LembreteError, match="no máximo 5 anos"):
+        ler_data("1/1/2032", time(9, 0), AGORA)
+
+
+@pytest.mark.parametrize("texto", ["25-12", "25/12/2", "dez/25", "25.12"])
+def test_recusa_datas_mal_escritas(texto):
+    with pytest.raises(LembreteError, match="Não entendi a data"):
+        ler_data(texto, time(9, 0), AGORA)
+
+
+def test_data_usa_o_dia_de_brasilia():
+    # 01:00 em UTC do dia 28 ainda é 22:00 do dia 27 em Brasília: 27/09 23:00 é hoje.
+    agora_utc = datetime(2026, 9, 28, 1, 0, tzinfo=timezone.utc)
+    assert ler_data("27/09", time(23, 0), agora_utc) == datetime(2026, 9, 27, 23, 0, tzinfo=FUSO)
+
+
+def test_interpreta_data_com_horario():
+    assert interpretar(["25/12", "20:30", "ceia", "na", "vó"], AGORA) == Pedido(
+        datetime(2026, 12, 25, 20, 30, tzinfo=FUSO), "ceia na vó"
+    )
+
+
+def test_interpreta_data_sem_horario_usa_9h():
+    assert interpretar(["15/10", "aniversário", "do", "Rafa"], AGORA) == Pedido(
+        datetime(2026, 10, 15, 9, 0, tzinfo=FUSO), "aniversário do Rafa"
+    )
+
+
+@pytest.mark.parametrize("palavras", [["25/12"], ["25/12", "9:00"], ["25/12", "às", "9:00"]])
+def test_data_sem_texto_mostra_como_usar(palavras):
+    with pytest.raises(LembreteError, match="Use assim"):
+        interpretar(palavras, AGORA)
+
+
+def test_data_com_horario_que_nao_existe():
+    with pytest.raises(LembreteError, match='"25:00" não existe'):
+        interpretar(["25/12", "25:00", "ceia"], AGORA)
+
+
+@pytest.mark.parametrize("inicio", [["às"], ["as"], ["Às"]])
+def test_interpreta_data_com_as_antes_do_horario(inicio):
+    assert interpretar(["25/12", *inicio, "20:30", "ceia"], AGORA) == Pedido(
+        datetime(2026, 12, 25, 20, 30, tzinfo=FUSO), "ceia"
+    )
+
+
+def test_as_sem_horario_valido_e_erro():
+    with pytest.raises(LembreteError, match="Não entendi o horário"):
+        interpretar(["25/12", "às", "ceia"], AGORA)
+
+
+@pytest.mark.parametrize("horario", ["20h", "9h30", "20H"])
+def test_data_com_horario_sem_dois_pontos_e_erro(horario):
+    # Sem o aviso, viraria 9:00 com o texto "20h ceia".
+    with pytest.raises(LembreteError, match="dois-pontos"):
+        interpretar(["25/12", horario, "ceia"], AGORA)
+
+
+def test_texto_que_comeca_com_algo_como_data_vira_data():
+    # Intencional: "1/2" segue o formato de data e a confirmação mostra o dia.
+    assert interpretar(["1/2", "pizza"], AGORA) == Pedido(
+        datetime(2027, 2, 1, 9, 0, tzinfo=FUSO), "pizza"
+    )
+
+
+def test_data_na_virada_do_ano_confirma_amanha():
+    agora = datetime(2026, 12, 31, 23, 50, tzinfo=FUSO)
+    pedido = interpretar(["1/1", "0:10", "abraços"], agora)
+    assert pedido.quando == datetime(2027, 1, 1, 0, 10, tzinfo=FUSO)
+    assert confirmar(pedido, agora) == "✅ Combinado! Amanhã às 00:10 eu te lembro: abraços"
+
+
+def test_confirmacao_de_data_usa_o_dia_de_brasilia():
+    # 01:00 em UTC do dia 28 ainda é 22:00 do dia 27 em Brasília.
+    agora_utc = datetime(2026, 9, 28, 1, 0, tzinfo=timezone.utc)
+    pedido = interpretar(["28/09", "8:00", "dentista"], agora_utc)
+    assert confirmar(pedido, agora_utc) == "✅ Combinado! Amanhã às 08:00 eu te lembro: dentista"
+
+
+def test_data_no_meio_do_texto_nao_e_data():
+    pedido = interpretar(["10m", "pagar", "até", "25/12"], AGORA)
+    assert pedido.texto == "pagar até 25/12"
+
+
+@pytest.mark.parametrize(
     ("palavras", "esperado"),
     [
         (["1h30m", "reunião"], "✅ Combinado! Daqui a 1h30min (às 11:30) eu te lembro: reunião"),
         (["2d", "boleto"], "✅ Combinado! Daqui a 2d (em 29/09 às 10:00) eu te lembro: boleto"),
         (["18:30", "ligar"], "✅ Combinado! Hoje às 18:30 eu te lembro: ligar"),
         (["9:15", "ligar"], "✅ Combinado! Amanhã às 09:15 eu te lembro: ligar"),
+        (["27/09", "18:00", "ligar"], "✅ Combinado! Hoje às 18:00 eu te lembro: ligar"),
+        (["28/09", "ligar"], "✅ Combinado! Amanhã às 09:00 eu te lembro: ligar"),
+        (["25/12", "20:30", "ceia"], "✅ Combinado! Em 25/12 às 20:30 eu te lembro: ceia"),
+        (["5/1", "boleto"], "✅ Combinado! Em 05/01/2027 às 09:00 eu te lembro: boleto"),
         (
             ["todo", "dia", "22:00", "remédio"],
             "✅ Combinado! Todo dia às 22:00 eu te lembro: remédio\nO primeiro é hoje.",

@@ -28,7 +28,7 @@ COMANDOS = [
     BotCommand("bitcoin", "preço do Bitcoin em reais"),
     BotCommand("dolar", "cotação do dólar"),
     BotCommand("clima", "clima agora, ex.: /clima Curitiba"),
-    BotCommand("lembrar", "lembrete, ex.: /lembrar 10m ou 18:30 ou todo dia 8:00"),
+    BotCommand("lembrar", "lembrete, ex.: /lembrar 10m ou 18:30 ou 25/12 9:00 ou todo dia 8:00"),
     BotCommand("lembretes", "lista seus lembretes pendentes"),
     BotCommand("cancelar", "cancela um lembrete, ex.: /cancelar 3"),
     BotCommand("alerta", "avisa quando o preço chegar, ex.: /alerta bitcoin acima 400000"),

@@ -1,5 +1,5 @@
-"""Interpreta pedidos de lembrete como "10m tomar água", "18:30 reunião"
-ou "todo dia 8:00 tomar remédio".
+"""Interpreta pedidos de lembrete como "10m tomar água", "18:30 reunião",
+"25/12 9:00 ligar pra vó" ou "todo dia 8:00 tomar remédio".
 
 Não depende do Telegram: só entende o texto e faz as contas de horário.
 Quem salva e agenda é o bot.
@@ -7,7 +7,7 @@ Quem salva e agenda é o bot.
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 # Horários mostrados e digitados são sempre de Brasília, não importa o fuso do PC.
@@ -19,6 +19,18 @@ FORMATO_TEMPO = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m(?:in)?)?$", re.IGN
 # Horário do relógio: "8:00", "18:30". Só com dois-pontos, porque "18h" já quer
 # dizer "daqui a 18 horas".
 FORMATO_HORARIO = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+# Data: "25/12", "25/12/2026" ou "25/12/26".
+FORMATO_DATA = re.compile(r"^(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?$")
+
+# "20h", "9h30": depois de uma data, quase certamente é um horário mal escrito.
+PARECE_HORARIO = re.compile(r"^\d{1,2}h(\d{2})?$", re.IGNORECASE)
+
+# Horário usado quando a data vem sem horário: "/lembrar 25/12 aniversário".
+HORARIO_PADRAO = time(9, 0)
+
+# Até onde uma data com ano pode ir; também só evita erros de digitação ("25/12/2226").
+ANOS_MAXIMOS = 5
 
 # Os lembretes ficam salvos no banco, então sobrevivem a reinicializações;
 # o limite só evita erros de digitação como "1000d".
@@ -34,6 +46,7 @@ USO = (
     "Use assim:\n"
     "/lembrar 10m tomar água\n"
     "/lembrar 18:30 ligar pra mãe\n"
+    "/lembrar 25/12 9:00 ligar pra vó\n"
     "/lembrar todo dia 8:00 tomar remédio\n"
     "Tempos aceitos: 10m, 2h, 1h30m, 1d"
 )
@@ -92,20 +105,69 @@ def proxima_vez(horario: time, agora: datetime) -> datetime:
     return momento
 
 
+def ler_data(texto: str, horario: time | None, agora: datetime) -> datetime:
+    """ler_data("25/12", time(20, 30), agora) -> 25/12 às 20:30 deste ano, ou do próximo se já passou.
+
+    Sem horário (None), usa o HORARIO_PADRAO.
+    """
+    combinou = FORMATO_DATA.match(texto)
+    if not combinou:
+        raise LembreteError(f'Não entendi a data "{texto}". Use, por exemplo, 25/12 ou 25/12/2026.')
+    dia, mes = int(combinou[1]), int(combinou[2])
+    agora = agora.astimezone(FUSO)
+    hora_certa = horario or HORARIO_PADRAO
+
+    def montar(ano: int) -> datetime | None:
+        try:
+            return datetime.combine(date(ano, mes, dia), hora_certa, tzinfo=FUSO)
+        except ValueError:
+            return None
+
+    if combinou[3] is not None:
+        ano = int(combinou[3])
+        momento = montar(ano + 2000 if ano < 100 else ano)
+        if momento is None:
+            raise LembreteError(f'A data "{texto}" não existe.')
+        if momento.date() < agora.date():
+            raise LembreteError(f'A data "{texto}" já passou.')
+        if momento.year > agora.year + ANOS_MAXIMOS:
+            raise LembreteError(f"A data pode ser no máximo {ANOS_MAXIMOS} anos à frente.")
+    else:
+        # Sem ano: a próxima vez que a data chega. 29/02 pode pular alguns anos.
+        candidatos = [montar(ano) for ano in range(agora.year, agora.year + ANOS_MAXIMOS)]
+        candidatos = [m for m in candidatos if m is not None and m.date() >= agora.date()]
+        if not candidatos:
+            raise LembreteError(f'A data "{texto}" não existe.')
+        momento = candidatos[0]
+
+    if momento <= agora:
+        # Só acontece com a data de hoje. "27/09 8:00" às 10:00 do dia 27 é engano,
+        # não um lembrete para daqui a um ano.
+        if horario is None:
+            raise LembreteError(
+                f"Sem horário, o lembrete fica para as {HORARIO_PADRAO:%H:%M}, que hoje já passou. "
+                f"Escreva o horário, por exemplo: /lembrar {texto} 23:00 ..."
+            )
+        raise LembreteError(f"O horário {horario:%H:%M} de hoje já passou.")
+    return momento
+
+
 def interpretar(palavras: list[str], agora: datetime) -> Pedido:
     """["10m", "tomar", "água"] -> Pedido(quando=agora + 10 minutos, texto="tomar água").
 
-    Também entende ["18:30", ...] (horário fixo) e ["todo", "dia", "8:00", ...] (diário).
+    Também entende ["18:30", ...] (horário fixo), ["25/12", "9:00", ...] (data, com
+    horário opcional, também "25/12 às 9:00") e ["todo", "dia", "8:00", ...] (diário).
     """
     diario = [p.lower() for p in palavras[:2]] == ["todo", "dia"]
     if diario:
         palavras = palavras[2:]
 
+    if not diario and palavras and FORMATO_DATA.match(palavras[0]):
+        return interpretar_data(palavras, agora)
+
     if len(palavras) < 2:
         raise LembreteError(USO)
-    texto = " ".join(palavras[1:])
-    if len(texto) > TAMANHO_MAXIMO:
-        raise LembreteError(f"O texto do lembrete pode ter até {TAMANHO_MAXIMO} caracteres.")
+    texto = ler_texto(palavras[1:])
 
     if FORMATO_HORARIO.match(palavras[0]) or diario:
         return Pedido(proxima_vez(ler_horario(palavras[0]), agora), texto, diario=diario)
@@ -114,16 +176,51 @@ def interpretar(palavras: list[str], agora: datetime) -> Pedido:
     return Pedido(agora + tempo, texto, tempo=tempo)
 
 
+def interpretar_data(palavras: list[str], agora: datetime) -> Pedido:
+    """["25/12", "às", "20:30", "ceia"] ou ["25/12", "ceia"] (às 9:00)."""
+    data, resto = palavras[0], palavras[1:]
+    com_as = bool(resto) and resto[0].lower() in ("às", "as")
+    if com_as:
+        resto = resto[1:]
+
+    horario = None
+    if resto and (com_as or FORMATO_HORARIO.match(resto[0])):
+        horario = ler_horario(resto[0])
+        resto = resto[1:]
+    elif resto and PARECE_HORARIO.match(resto[0]):
+        # "25/12 20h ceia" viraria 9:00 com o texto "20h ceia": melhor avisar.
+        raise LembreteError(f'Escreva o horário com dois-pontos: 20:30 em vez de "{resto[0]}".')
+
+    if not resto:
+        raise LembreteError(USO)
+    return Pedido(ler_data(data, horario, agora), ler_texto(resto))
+
+
+def ler_texto(palavras: list[str]) -> str:
+    texto = " ".join(palavras)
+    if len(texto) > TAMANHO_MAXIMO:
+        raise LembreteError(f"O texto do lembrete pode ter até {TAMANHO_MAXIMO} caracteres.")
+    return texto
+
+
 def confirmar(pedido: Pedido, agora: datetime) -> str:
     """A mensagem que o bot responde depois de salvar o pedido."""
     quando = pedido.quando.astimezone(FUSO)
-    dia = "hoje" if quando.date() == agora.astimezone(FUSO).date() else "amanhã"
+    hoje = agora.astimezone(FUSO).date()
+    if quando.date() == hoje:
+        dia = "hoje"
+    elif quando.date() == hoje + timedelta(days=1):
+        dia = "amanhã"
+    else:
+        dia = None
 
     if pedido.diario:
         return (
             f"✅ Combinado! Todo dia às {quando:%H:%M} eu te lembro: {pedido.texto}\n"
             f"O primeiro é {dia}."
         )
+    if pedido.tempo is None and dia is None:
+        return f"✅ Combinado! Em {data_e_hora(quando, agora)} eu te lembro: {pedido.texto}"
     if pedido.tempo is None:
         return f"✅ Combinado! {dia.capitalize()} às {quando:%H:%M} eu te lembro: {pedido.texto}"
     return (

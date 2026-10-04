@@ -17,6 +17,7 @@
 | `/clima Curitiba` | Temperatura, sensação térmica, umidade, vento, máxima/mínima e chance de chuva |
 | `/lembrar 1h30m reunião` | Lembrete depois do tempo pedido (`10m`, `2h`, `1h30m`, `1d`, até 365 dias) |
 | `/lembrar 18:30 ligar pra mãe` | Lembrete num horário fixo: hoje, ou amanhã se o horário já passou |
+| `/lembrar 25/12 20:30 ceia` | Lembrete numa data (`25/12`, `25/12/2027`, também `25/12 às 20:30`); sem horário, às 9:00 |
 | `/lembrar todo dia 8:00 remédio` | Lembrete repetido todo dia no mesmo horário |
 | `/lembretes` | Lista os lembretes pendentes, com número |
 | `/cancelar 3` | Cancela o lembrete de número 3 (só os do próprio chat) |
@@ -116,7 +117,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-São 205 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
+São 251 testes cobrindo a leitura do `.env`, as cotações, os alertas de preço, o clima, a interpretação dos lembretes (tempos, horários, datas, fuso, virada de ano), o banco SQLite (sempre num arquivo temporário) e os comandos do bot, incluindo a lista de permitidos com mensagens montadas como as que o Telegram envia. **Nenhum teste usa o token real nem acessa a internet:** as APIs são substituídas por um servidor falso (`httpx.MockTransport`) e os objetos do Telegram por imitações simples. Por isso o GitHub Actions roda tudo a cada push, nas versões 3.10 a 3.14 do Python, sem precisar de nenhum segredo.
 
 ## Estrutura do projeto
 
@@ -128,7 +129,7 @@ bot-utilidades/
 │   ├── bot.py           # comandos do Telegram, porteiro e agendamento dos lembretes
 │   ├── cotacoes.py      # Bitcoin e dólar (AwesomeAPI)
 │   ├── clima.py         # clima (Open-Meteo)
-│   ├── lembretes.py     # interpreta "1h30m", "18:30" e "todo dia 8:00"
+│   ├── lembretes.py     # interpreta "1h30m", "18:30", "25/12 9:00" e "todo dia 8:00"
 │   └── armazenamento.py # guarda os lembretes em SQLite
 ├── dados/             # banco dos lembretes (criado ao rodar, fora do Git)
 ├── tests/             # testes com pytest
@@ -163,5 +164,5 @@ bot-utilidades/
 - [x] Lista de usuários permitidos no `.env`
 - [x] Alerta de preço: avisar quando o Bitcoin (ou o dólar) chegar a um valor
 - [x] Hospedar o bot num servidor para ficar online 24 horas (Oracle Cloud, systemd)
-- [ ] Lembretes numa data específica (`/lembrar 25/12 9:00 ...`)
+- [x] Lembretes numa data específica (`/lembrar 25/12 9:00 ...`)
 - [ ] Lembretes semanais num dia da semana e horário escolhidos (`/lembrar toda quinta 19:00 ...`)

@@ -45,6 +45,15 @@ def comandos_registrados(app) -> set[str]:
     return {comando for handler in app.handlers[0] for comando in handler.commands}
 
 
+def test_lembrar_numa_data(banco):
+    _, respostas = simular_lembrar(["25/12", "20:30", "ceia", "na", "vó"], banco)
+
+    [lembrete] = banco.todos()
+    assert lembrete.quando == datetime(2026, 12, 25, 20, 30, tzinfo=FUSO)
+    assert not lembrete.diario
+    assert respostas == ["✅ Combinado! Em 25/12 às 20:30 eu te lembro: ceia na vó"]
+
+
 def test_lembrar_horario_fixo_e_diario(banco):
     _, respostas = simular_lembrar(["18:30", "ligar", "pra", "mãe"], banco)
     _, respostas_diario = simular_lembrar(["todo", "dia", "8:00", "remédio"], banco)
