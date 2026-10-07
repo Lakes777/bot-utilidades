@@ -1,6 +1,6 @@
 # Sidekick
 
-[![Testes](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml/badge.svg)](https://github.com/Lakes777/bot-utilidades/actions/workflows/testes.yml)
+[![Testes](https://github.com/Lakes777/sidekick/actions/workflows/testes.yml/badge.svg)](https://github.com/Lakes777/sidekick/actions/workflows/testes.yml)
 
 **Sidekick · bot de utilidades** para o Telegram: responde com a **cotação do Bitcoin e do dólar**, o **clima de qualquer cidade**, **avisa de manhã se for chover** e agenda **lembretes** que ficam salvos (numa data, todo dia, em dias da semana ou todo mês), com botões para adiar. Feito em Python com `python-telegram-bot`, usando APIs públicas e gratuitas que não pedem cadastro.
 
@@ -54,8 +54,8 @@
 Requer **Python 3.10+**.
 
 ```bash
-git clone https://github.com/Lakes777/bot-utilidades.git
-cd bot-utilidades
+git clone https://github.com/Lakes777/sidekick.git
+cd sidekick
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -83,7 +83,7 @@ Quem não estiver na lista recebe "Este bot é particular" junto com o próprio 
 
 ### Lançando gastos no Spendwise (opcional)
 
-O `/gasto 35 mercado pão` lança o gasto direto no [Spendwise](https://github.com/Lakes777/controle-gastos), o controle de gastos que também fiz. No site dele, entre na sua conta, abra **Sua conta > Chaves de acesso**, crie uma chave e cole no `.env` (ela aparece uma vez só):
+O `/gasto 35 mercado pão` lança o gasto direto no [Spendwise](https://github.com/Lakes777/spendwise), o controle de gastos que também fiz. No site dele, entre na sua conta, abra **Sua conta > Chaves de acesso**, crie uma chave e cole no `.env` (ela aparece uma vez só):
 
 ```bash
 SPENDWISE_CHAVE=sw_...
@@ -93,7 +93,7 @@ A chave só lança e lê gastos: não troca senha nem apaga a conta, e pode ser 
 
 ### Prazos do Coursebook (opcional)
 
-O `/prazos` lê as provas, trabalhos e avaliações do [Coursebook](https://github.com/Lakes777/painel-estudos), o painel de estudos que também fiz. No site dele, entre na conta, abra a tela **Dados > Chaves de acesso**, crie uma chave e cole no `.env`:
+O `/prazos` lê as provas, trabalhos e avaliações do [Coursebook](https://github.com/Lakes777/coursebook), o painel de estudos que também fiz. No site dele, entre na conta, abra a tela **Dados > Chaves de acesso**, crie uma chave e cole no `.env`:
 
 ```bash
 COURSEBOOK_CHAVE=cb_...
@@ -180,7 +180,7 @@ bot-utilidades/
 - **Lógica separada do Telegram:** `cotacoes.py`, `clima.py` e `lembretes.py` não importam nada do Telegram. Recebem dados e devolvem texto, então dá para testá-los sem bot, sem token e sem rede. O `bot.py` só liga cada comando à função certa.
 - **Token protegido em três pontos:** fica no `.env` (fora do Git, e o histórico foi conferido antes do primeiro push), é validado ao iniciar (um token ausente ou ainda com o texto do exemplo gera um erro que explica como corrigir) e **não aparece nos logs**. A biblioteca `httpx` registra a URL de cada requisição, e a URL da API do Telegram contém o token, por isso o log dela fica restrito a avisos; um teste garante isso.
 - **Arredondamento de verdade:** um teste mostrou que uma variação de -1,185% aparecia como -1,18%. Tanto o `Decimal` quanto o `round()` do Python usam o "arredondamento do banqueiro" (0,5 vai para o par mais próximo). Os dois foram trocados pelo arredondamento que se aprende na escola.
-- **`Decimal` para dinheiro:** como no [controle de gastos](https://github.com/Lakes777/controle-gastos), os preços nunca passam por `float`, evitando erros de centavos.
+- **`Decimal` para dinheiro:** como no [controle de gastos](https://github.com/Lakes777/spendwise), os preços nunca passam por `float`, evitando erros de centavos.
 - **APIs sem cadastro:** a [AwesomeAPI](https://docs.awesomeapi.com.br/api-de-moedas) (cotações) e o [Open-Meteo](https://open-meteo.com/) (clima) não pedem chave. A AwesomeAPI, porém, limita as consultas sem cadastro por endereço, e da máquina da Oracle ela recusou logo a primeira (`429 Quota exceeded`), enquanto do PC respondia normalmente: IPs de nuvem são compartilhados. Por isso o `.env` aceita uma chave gratuita opcional (`AWESOMEAPI_TOKEN`, 100 mil consultas por mês), enviada no cabeçalho `x-api-key` e só nas requisições de cotação, para não aparecer em URLs nem ir para a API do clima. O clima faz duas consultas: primeiro converte o nome da cidade em coordenadas, depois busca a previsão.
 - **Um handler para várias moedas:** `/bitcoin` e `/dolar` são criados pela mesma função a partir de uma descrição da moeda. Adicionar outra (Ethereum, euro) é uma linha.
 - **Banco como fonte da verdade, `JobQueue` só como despertador:** cada lembrete é salvo no SQLite e o agendador guarda só o número dele. Na hora de enviar, o texto é lido do banco; um lembrete cancelado no meio do caminho simplesmente não é achado. O lembrete só é apagado **depois** que o Telegram confirma o envio: se a internet cair, ele continua salvo e sai quando o bot voltar. Datas ficam em UTC, sempre no mesmo formato de texto, para a ordem alfabética ser a cronológica.
