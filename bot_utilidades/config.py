@@ -70,7 +70,7 @@ def carregar_permitidos(arquivo_env: Path | None = None) -> frozenset[int] | Non
 
 
 # O endereço do Spendwise no ar; dá para trocar no .env (ex.: um servidor local).
-SPENDWISE_URL_PADRAO = "https://controle-gastos-lakes777.vercel.app"
+SPENDWISE_URL_PADRAO = "https://spendwisealp.vercel.app"
 # Só ASCII: o \w do Python aceitaria "á", que o cabeçalho HTTP não consegue enviar.
 FORMATO_CHAVE_SPENDWISE = re.compile(r"^sw_[A-Za-z0-9_-]{20,}$")
 
@@ -109,7 +109,7 @@ def ler_url(variavel: str, padrao: str) -> str:
     return url
 
 
-COURSEBOOK_URL_PADRAO = "https://painel-estudos-cyan.vercel.app"
+COURSEBOOK_URL_PADRAO = "https://coursebookalp.vercel.app"
 FORMATO_CHAVE_COURSEBOOK = re.compile(r"^cb_[A-Za-z0-9_-]{20,}$")
 
 

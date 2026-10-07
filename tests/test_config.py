@@ -100,7 +100,7 @@ def test_spendwise_desligado_sem_chave(tmp_path):
 def test_spendwise_com_url_padrao(tmp_path):
     env = tmp_path / ".env"
     env.write_text(f"SPENDWISE_CHAVE={CHAVE_SPENDWISE}\n")
-    assert carregar_spendwise(env) == ("https://controle-gastos-lakes777.vercel.app", CHAVE_SPENDWISE)
+    assert carregar_spendwise(env) == ("https://spendwisealp.vercel.app", CHAVE_SPENDWISE)
 
 
 def test_spendwise_url_local(tmp_path, monkeypatch):
@@ -148,7 +148,7 @@ def test_coursebook_desligado_sem_chave(tmp_path):
 def test_coursebook_com_url_padrao(tmp_path):
     env = tmp_path / ".env"
     env.write_text(f"COURSEBOOK_CHAVE={CHAVE_COURSEBOOK}\n")
-    assert carregar_coursebook(env) == ("https://painel-estudos-cyan.vercel.app", CHAVE_COURSEBOOK)
+    assert carregar_coursebook(env) == ("https://coursebookalp.vercel.app", CHAVE_COURSEBOOK)
 
 
 @pytest.mark.parametrize("chave", ["sw_" + "a" * 40, "cb_curta", "cb_" + "ç" * 40])
